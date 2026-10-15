@@ -113,6 +113,21 @@ describe('Testes Automatizados de Segurança: Supabase Auth & RLS Roles', () => 
       // Deve falhar com violação de política RLS
       assert.ok(error, 'Inserção anônima em profiles deve falhar com violação de RLS');
     });
+
+    it('deve proibir usuário anônimo de ler a tabela daily_meals', async () => {
+      const { data } = await anonClient.from('daily_meals').select('*');
+      const count = data ? data.length : 0;
+      assert.equal(count, 0, 'Usuário anônimo não pode ver refeições da casa');
+    });
+
+    it('deve rejeitar inserção na tabela daily_meals por cliente anônimo', async () => {
+      const { error } = await anonClient.from('daily_meals').insert({
+        usuario_id: '00000000-0000-0000-0000-000000000001',
+        data: '2026-10-15',
+        misturas_consumidas: 0.5,
+      });
+      assert.ok(error, 'Inserção anônima em daily_meals deve falhar por RLS');
+    });
   });
 
   describe('2. Integridade do Gatilho do Servidor (handle_new_user)', () => {

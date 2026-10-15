@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
     CONSTRAINT unique_escala_dia UNIQUE (quarto_id, area_comum_id, semana_ano, ano, data)
 );
 
--- 9. OCORRÊNCIAS DE DESORGANIZAÇÃO (Pontos Individuais com Foto e Chat)
-CREATE TABLE IF NOT EXISTS public.ocorrencias_desorganizacao (
+-- 9. PONTOS DE BAGUNÇA (Pontos Individuais com Foto e Chat)
+CREATE TABLE IF NOT EXISTS public.pontos_bagunca (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     relator_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     culpado_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
@@ -112,10 +112,10 @@ CREATE TABLE IF NOT EXISTS public.ocorrencias_desorganizacao (
     assumida_em TIMESTAMPTZ
 );
 
--- 10. MENSAGENS DE DISCUSSÃO DA OCORRÊNCIA (Thread Interna)
-CREATE TABLE IF NOT EXISTS public.mensagens_ocorrencia (
+-- 10. MENSAGENS DE DISCUSSÃO DO PONTO DE BAGUNÇA (Thread Interna)
+CREATE TABLE IF NOT EXISTS public.mensagens_ponto_bagunca (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    ocorrencia_id UUID NOT NULL REFERENCES public.ocorrencias_desorganizacao(id) ON DELETE CASCADE,
+    ponto_bagunca_id UUID NOT NULL REFERENCES public.pontos_bagunca(id) ON DELETE CASCADE,
     autor_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     conteudo TEXT NOT NULL,
     enviada_em TIMESTAMPTZ DEFAULT NOW()
@@ -227,11 +227,11 @@ DECLARE
     v_mes_inicio DATE := DATE_TRUNC('month', NEW.assumida_em);
     v_mes_fim DATE := (DATE_TRUNC('month', NEW.assumida_em) + INTERVAL '1 month - 1 day')::DATE;
 BEGIN
-    -- Apenas atua quando uma ocorrência for assumida por um culpado
+    -- Apenas atua quando um ponto de bagunça for assumido por um culpado
     IF (NEW.status = 'assumida' AND NEW.culpado_id IS NOT NULL) THEN
         SELECT COUNT(*)
         INTO v_total_pontos
-        FROM public.ocorrencias_desorganizacao
+        FROM public.pontos_bagunca
         WHERE culpado_id = NEW.culpado_id
           AND status = 'assumida'
           AND assumida_em::DATE BETWEEN v_mes_inicio AND v_mes_fim;
@@ -246,7 +246,7 @@ BEGIN
                 status
             ) VALUES (
                 NEW.culpado_id,
-                'Acúmulo de 7 pontos individuais de desorganização em ' || TO_CHAR(NEW.assumida_em, 'MM/YYYY'),
+                'Acúmulo de 7 pontos de bagunça em ' || TO_CHAR(NEW.assumida_em, 'MM/YYYY'),
                 'pontos',
                 CURRENT_DATE,
                 'pendente'
@@ -257,9 +257,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-DROP TRIGGER IF EXISTS trg_gerar_cerveja_por_pontos ON public.ocorrencias_desorganizacao;
+DROP TRIGGER IF EXISTS trg_gerar_cerveja_por_pontos ON public.pontos_bagunca;
 CREATE TRIGGER trg_gerar_cerveja_por_pontos
-AFTER UPDATE OF status ON public.ocorrencias_desorganizacao
+AFTER UPDATE OF status ON public.pontos_bagunca
 FOR EACH ROW
 EXECUTE FUNCTION public.check_pontos_gerar_cerveja();
 
@@ -301,11 +301,26 @@ RETURNS trigger AS $$
 DECLARE
   v_quarto_id UUID := NULL;
   v_raw_quarto TEXT;
+  v_role TEXT;
+  v_ativo BOOLEAN;
+  v_telefone TEXT;
 BEGIN
+  -- Sanitização rigorosa de cargo:
+  -- Apenas 'externo' é aceito diretamente via metadata de cadastro rápido.
+  -- Se tentar 'admin' ou qualquer valor arbitrário, força 'morador'.
+  IF new.raw_user_meta_data->>'role' = 'externo' THEN
+    v_role := 'externo';
+    v_ativo := TRUE; -- Convidados externos têm aprovação imediata para poder marcar refeição no mesmo dia
+  ELSE
+    v_role := 'morador';
+    v_ativo := FALSE; -- Novos moradores da república exigem aprovação prévia do Admin
+  END IF;
+
+  v_telefone := new.raw_user_meta_data->>'telefone_contato';
   v_raw_quarto := NULLIF(new.raw_user_meta_data->>'quarto_id', '');
 
-  -- Valida se o quarto existe de fato na tabela rooms para evitar quebra de chave estrangeira
-  IF v_raw_quarto IS NOT NULL THEN
+  -- Valida se o quarto existe de fato na tabela rooms para evitar quebra de FK (apenas para morador)
+  IF v_role = 'morador' AND v_raw_quarto IS NOT NULL THEN
     BEGIN
       SELECT id INTO v_quarto_id 
       FROM public.rooms 
@@ -318,21 +333,33 @@ BEGIN
   -- Se já existir perfil órfão com o mesmo e-mail (ex: usuário deletado em auth.users), remove para evitar erro de UK
   DELETE FROM public.profiles WHERE email = new.email AND id <> new.id;
 
-  INSERT INTO public.profiles (id, email, nome, apelido, role, geracao, quarto_id, ativo)
+  INSERT INTO public.profiles (
+    id,
+    email,
+    nome,
+    apelido,
+    role,
+    geracao,
+    quarto_id,
+    telefone_contato,
+    ativo
+  )
   VALUES (
     new.id,
     new.email,
     COALESCE(new.raw_user_meta_data->>'nome', split_part(new.email, '@', 1)),
     new.raw_user_meta_data->>'apelido',
-    'morador', -- SEMPRE morador comum (impossível auto-promoção)
-    COALESCE(new.raw_user_meta_data->>'geracao', '025'),
-    v_quarto_id,
-    FALSE      -- SEMPRE inativo (aguardando aprovação do admin)
+    v_role,
+    CASE WHEN v_role = 'morador' THEN COALESCE(new.raw_user_meta_data->>'geracao', '025') ELSE NULL END,
+    CASE WHEN v_role = 'morador' THEN v_quarto_id ELSE NULL END,
+    v_telefone,
+    v_ativo
   )
   ON CONFLICT (id) DO UPDATE SET
     nome = EXCLUDED.nome,
     email = EXCLUDED.email,
     apelido = EXCLUDED.apelido,
+    telefone_contato = EXCLUDED.telefone_contato,
     geracao = EXCLUDED.geracao,
     quarto_id = EXCLUDED.quarto_id;
 
@@ -384,7 +411,7 @@ CREATE POLICY "Atualizacao de perfis"
 ON public.profiles FOR UPDATE
 TO authenticated
 USING (public.is_admin() OR auth.uid() = id)
-WITH CHECK (public.is_admin() OR (auth.uid() = id AND role = 'morador'));
+WITH CHECK (public.is_admin() OR (auth.uid() = id AND role IN ('morador', 'externo')));
 
 -- Exclusão: Apenas Admin pode recusar/deletar perfis
 DROP POLICY IF EXISTS "Apenas admin pode deletar perfis" ON public.profiles;
@@ -449,4 +476,181 @@ CREATE POLICY "Apenas admin remove membros da frente"
 ON public.front_members FOR DELETE
 TO authenticated
 USING (public.is_admin());
+
+-- ==============================================================================
+-- 4. TABELA DAILY_MEALS (Folha de Misturas Digital - RN01)
+-- ==============================================================================
+ALTER TABLE public.daily_meals ENABLE ROW LEVEL SECURITY;
+
+-- Helper para verificar se o usuário atual é morador ativo da república
+CREATE OR REPLACE FUNCTION public.is_active_morador()
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role IN ('morador', 'admin') AND ativo = true
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- Helper para verificar se o usuário atual é convidado externo ativo
+CREATE OR REPLACE FUNCTION public.is_active_externo()
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role = 'externo' AND ativo = true
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- SELECT: Moradores ativos e Admin podem ver todas as refeições; Convidado externo pode ver suas próprias refeições
+DROP POLICY IF EXISTS "Todos podem ler refeicoes" ON public.daily_meals;
+DROP POLICY IF EXISTS "Leitura de refeicoes" ON public.daily_meals;
+CREATE POLICY "Leitura de refeicoes"
+ON public.daily_meals FOR SELECT
+TO authenticated
+USING (
+  public.is_admin() OR 
+  public.is_active_morador() OR 
+  (public.is_active_externo() AND usuario_id = auth.uid())
+);
+
+-- INSERT: Morador ativo ou convidado externo podem marcar sua própria refeição hoje; Admin pode marcar para qualquer um hoje
+DROP POLICY IF EXISTS "Morador ativo ou admin insere refeicao" ON public.daily_meals;
+DROP POLICY IF EXISTS "Insercao de refeicao diaria" ON public.daily_meals;
+CREATE POLICY "Insercao de refeicao diaria"
+ON public.daily_meals FOR INSERT
+TO authenticated
+WITH CHECK (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+    public.is_admin() OR (
+      (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
+    )
+  )
+);
+
+-- UPDATE: Alterações permitidas exclusivamente no dia de hoje (dias anteriores são somente leitura)
+DROP POLICY IF EXISTS "Morador ativo ou admin atualiza refeicao" ON public.daily_meals;
+DROP POLICY IF EXISTS "Atualizacao de refeicao diaria" ON public.daily_meals;
+CREATE POLICY "Atualizacao de refeicao diaria"
+ON public.daily_meals FOR UPDATE
+TO authenticated
+USING (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+    public.is_admin() OR (
+      (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
+    )
+  )
+)
+WITH CHECK (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+    public.is_admin() OR (
+      (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
+    )
+  )
+);
+
+-- DELETE: Remoção permitida para morador ativo, convidado externo (própria refeição) ou Administrador
+DROP POLICY IF EXISTS "Morador ativo ou admin remove refeicao" ON public.daily_meals;
+DROP POLICY IF EXISTS "Remocao de refeicao diaria" ON public.daily_meals;
+CREATE POLICY "Remocao de refeicao diaria"
+ON public.daily_meals FOR DELETE
+TO authenticated
+USING (
+  public.is_admin() OR (
+    (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
+  )
+);
+
+-- Habilita Realtime na tabela daily_meals para sincronização instantânea
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'daily_meals'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.daily_meals;
+  END IF;
+END $$;
+
+-- ==============================================================================
+-- 5. TABELA PONTOS_BAGUNCA & MENSAGENS_PONTO_BAGUNCA (Segurança RLS)
+-- ==============================================================================
+ALTER TABLE public.pontos_bagunca ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mensagens_ponto_bagunca ENABLE ROW LEVEL SECURITY;
+
+-- SELECT: Todos os moradores autenticados podem visualizar os pontos de bagunça
+DROP POLICY IF EXISTS "Todos podem ler pontos de bagunca" ON public.pontos_bagunca;
+CREATE POLICY "Todos podem ler pontos de bagunca"
+ON public.pontos_bagunca FOR SELECT
+TO authenticated
+USING (true);
+
+-- INSERT: Qualquer morador ativo pode abrir um ponto de bagunça (relator_id deve ser o próprio usuário)
+DROP POLICY IF EXISTS "Morador ativo pode relatar ponto de bagunca" ON public.pontos_bagunca;
+CREATE POLICY "Morador ativo pode relatar ponto de bagunca"
+ON public.pontos_bagunca FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND relator_id = auth.uid()
+  )
+);
+
+-- UPDATE: Culpado pode assumir o ponto (passa status para 'assumida', define culpado_id = auth.uid()), ou Admin
+DROP POLICY IF EXISTS "Culpado assume ou admin atualiza ponto de bagunca" ON public.pontos_bagunca;
+CREATE POLICY "Culpado assume ou admin atualiza ponto de bagunca"
+ON public.pontos_bagunca FOR UPDATE
+TO authenticated
+USING (
+  public.is_admin() OR public.is_active_morador()
+)
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND (
+      (status = 'assumida' AND culpado_id = auth.uid()) OR
+      (relator_id = auth.uid())
+    )
+  )
+);
+
+-- DELETE: Apenas admin pode excluir registros de pontos de bagunça
+DROP POLICY IF EXISTS "Apenas admin deleta ponto de bagunca" ON public.pontos_bagunca;
+CREATE POLICY "Apenas admin deleta ponto de bagunca"
+ON public.pontos_bagunca FOR DELETE
+TO authenticated
+USING (public.is_admin());
+
+-- MENSAGENS DO PONTO DE BAGUNÇA
+DROP POLICY IF EXISTS "Todos podem ler mensagens do ponto de bagunca" ON public.mensagens_ponto_bagunca;
+CREATE POLICY "Todos podem ler mensagens do ponto de bagunca"
+ON public.mensagens_ponto_bagunca FOR SELECT
+TO authenticated
+USING (true);
+
+DROP POLICY IF EXISTS "Morador ativo envia mensagem no ponto de bagunca" ON public.mensagens_ponto_bagunca;
+CREATE POLICY "Morador ativo envia mensagem no ponto de bagunca"
+ON public.mensagens_ponto_bagunca FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND autor_id = auth.uid()
+  )
+);
+
+-- Habilita Realtime para pontos_bagunca e mensagens_ponto_bagunca
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'pontos_bagunca'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.pontos_bagunca;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'mensagens_ponto_bagunca'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.mensagens_ponto_bagunca;
+  END IF;
+END $$;
+
 

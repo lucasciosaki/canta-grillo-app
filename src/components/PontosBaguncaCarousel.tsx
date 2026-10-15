@@ -1,25 +1,25 @@
 import React, { useState } from 'react';
 import { X, Send, ChevronLeft, ChevronRight, MessageCircle } from 'lucide-react';
-import type { Ocorrencia } from '../data/ocorrenciasMock';
+import type { PontoBagunca } from '../data/pontosBaguncaMock';
 import { Button, Tag } from './ui';
 
-interface OcorrenciasCarouselProps {
-  ocorrencias: Ocorrencia[];
+interface PontosBaguncaCarouselProps {
+  pontosBagunca: PontoBagunca[];
   onAssumirPonto: (id: string) => void;
   onEnviarMensagem: (id: string, texto: string) => void;
 }
 
-export const OcorrenciasCarousel: React.FC<OcorrenciasCarouselProps> = ({
-  ocorrencias,
+export const PontosBaguncaCarousel: React.FC<PontosBaguncaCarouselProps> = ({
+  pontosBagunca,
   onAssumirPonto,
   onEnviarMensagem,
 }) => {
   const [selecionadaId, setSelecionadaId] = useState<string | null>(null);
   const [novaMensagem, setNovaMensagem] = useState('');
 
-  // Filtra apenas as ocorrências pendentes (abertas)
-  const pendentes = ocorrencias.filter((o) => o.status === 'aberta');
-  const selecionada = ocorrencias.find((o) => o.id === selecionadaId);
+  // Filtra apenas os pontos de bagunça pendentes (abertos)
+  const pendentes = pontosBagunca.filter((o) => o.status === 'aberta');
+  const selecionada = pontosBagunca.find((o) => o.id === selecionadaId);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -50,7 +50,7 @@ export const OcorrenciasCarousel: React.FC<OcorrenciasCarouselProps> = ({
       {/* Cabeçalho da seção */}
       <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2">
-          <h3 className="text-xs font-medium text-muted">Pontos denunciados</h3>
+          <h3 className="text-xs font-medium text-muted">Pontos de Bagunça</h3>
           <Tag tone="alert">{pendentes.length} pendentes</Tag>
         </div>
 
@@ -80,16 +80,16 @@ export const OcorrenciasCarousel: React.FC<OcorrenciasCarouselProps> = ({
         className="flex gap-2.5 overflow-x-auto scrollbar-none snap-x snap-mandatory py-1"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
-        {pendentes.map((oc) => (
+        {pendentes.map((pb) => (
           <button
-            key={oc.id}
-            onClick={() => setSelecionadaId(oc.id)}
+            key={pb.id}
+            onClick={() => setSelecionadaId(pb.id)}
             className="shrink-0 w-[calc((100%-30px)/4)] snap-start text-left group focus:outline-none"
           >
             <div className="relative aspect-square w-full rounded-lg overflow-hidden border border-line bg-surface group-hover:border-muted transition-colors">
               <img
-                src={oc.foto}
-                alt={oc.titulo}
+                src={pb.foto}
+                alt={pb.titulo}
                 className="w-full h-full object-cover"
               />
               <span className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-ink/75 text-white text-[9px] font-medium leading-none">
@@ -97,10 +97,10 @@ export const OcorrenciasCarousel: React.FC<OcorrenciasCarouselProps> = ({
               </span>
             </div>
             <p className="text-[11px] font-medium text-ink truncate mt-1 leading-tight">
-              {oc.titulo}
+              {pb.titulo}
             </p>
             <p className="text-[10px] text-muted truncate leading-tight">
-              {oc.local}
+              {pb.local}
             </p>
           </button>
         ))}
@@ -121,7 +121,7 @@ export const OcorrenciasCarousel: React.FC<OcorrenciasCarouselProps> = ({
                   <h4 className="text-sm font-semibold text-ink truncate">
                     {selecionada.titulo}
                   </h4>
-                  <Tag tone="alert">Pendente</Tag>
+                  <Tag tone="alert">Ponto de Bagunça</Tag>
                 </div>
                 <p className="text-xs text-muted truncate mt-0.5">
                   {selecionada.local} · Denunciado por {selecionada.relator}

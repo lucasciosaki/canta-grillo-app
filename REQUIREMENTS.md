@@ -55,10 +55,13 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - `Vazio / 0`: Nenhuma mistura consumida ainda no dia.
   - `1/2`: Morador consumiu 1 mistura (geralmente no almoço).
   - `X`: Morador consumiu as 2 misturas (completou a cota diária, ex.: almoço + janta).
-- **Controle para Membros Externos / Convidados:**
-  - Lista separada de controle de misturas/refeições para não-moradores.
-  - Podem acessar via link ou serem registrados na lista por um morador.
-  - Consolidação mensal de quantas refeições/misturas cada membro externo consumiu.
+- **Controle para Membros Externos / Convidados (RN16):**
+  - Cadastro rápido via link de convite (`?convite=externo`) ou compartilhamento via WhatsApp.
+  - Ativação imediata (`ativo = true`, `role = 'externo'`) para registrar refeição na hora.
+  - Marcação binária: presença na casa = 1 refeição (não fraciona, valor fixo unitário da casa).
+  - Tela dedicada e isolada (`ConvidadoScreen`) com histórico mensal individual.
+  - Listagem separada na folha digital da casa e soma integrada no painel da cozinha.
+  - Consolidação mensal de quantas refeições cada membro externo consumiu para acerto da Caixinha.
 - **Preparação das Refeições:**
   - A casa conta com funcionária/cozinheira dedicada; o app **não** precisa gerenciar escalas de quem cozinha.
 - **Ciclo Diário:**
@@ -66,9 +69,9 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 
 ### 3.2 Gestão de Limpeza, Pontos e Organização da Casa
 
-#### 3.2.1 Sistema de Pontos Individuais (Desorganização)
-- **Abertura de Ocorrência com Foto Obrigatória:** Ao encontrar um item ou área desorganizada (ex.: copo na pia/sala, prato jogado, lixo fora do lugar), qualquer morador tira uma foto e abre uma ocorrência no app com o registro visual da infração.
-- **Thread / Chat de Discussão por Ocorrência:** Cada requisição de ponto aberta possui um chat dedicado onde os moradores podem debater, identificar o autor e esclarecer o ocorrido.
+#### 3.2.1 Sistema de Pontos Individuais (Pontos de Bagunça)
+- **Abertura de Ponto de Bagunça com Foto Obrigatória:** Ao encontrar um item ou área desorganizada (ex.: copo na pia/sala, prato jogado, lixo fora do lugar), qualquer morador tira uma foto e registra um Ponto de Bagunça (`PontoBagunca`) no app com o registro visual da infração.
+- **Thread / Chat de Discussão por Ponto de Bagunça:** Cada Ponto de Bagunça aberto possui um chat dedicado onde os moradores podem debater, identificar o autor e esclarecer o ocorrido.
 - **Assunção de Culpa ("Assumir o Ponto"):** O morador culpado clica no botão para assumir a infração diretamente no app. O ponto é então creditado automaticamente em seu perfil individual.
 - **Acúmulo Mensal e Gatilho:** Ao atingir a marca de **7 pontos acumulados no mês civil**, o sistema cria automaticamente uma obrigação de **1 caixa de cerveja individual** devida à república.
 - **Histórico e Reset:** Os pontos individuais são zerados no início de cada mês, mantendo-se o histórico arquivado.
@@ -160,10 +163,10 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - Os moradores pagam um valor mensal único e fixo estipulado pela república.
 - A Frente Financeiro é responsável por auditar os pagamentos e registrar a quitação.
 
-### RN04 - Abertura de Ocorrência, Discussão e Assunção de Culpa
-- Qualquer morador pode abrir uma ocorrência de desorganização anexando obrigatoriamente uma foto.
-- Cada ocorrência possui uma thread de mensagens em tempo real para identificação do autor.
-- A imputação do ponto individual ocorre quando o próprio morador responsável clica em "Assumir Ponto" dentro da ocorrência.
+### RN04 - Abertura de Ponto de Bagunça, Discussão e Assunção de Culpa
+- Qualquer morador pode abrir um Ponto de Bagunça anexando obrigatoriamente uma foto.
+- Cada Ponto de Bagunça possui uma thread de mensagens em tempo real para identificação do autor.
+- A imputação do ponto individual ocorre quando o próprio morador responsável clica em "Assumir Ponto" dentro do Ponto de Bagunça.
 - Ao acumular 7 pontos no mês civil, o sistema gera automaticamente 1 pendência de caixa de cerveja individual no nome do morador.
 - A contagem de pontos individuais é zerada no primeiro dia de cada mês civil.
 
@@ -221,6 +224,35 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 ### RN14 - Governança das Frentes e Co-Lideranças (Database-First RLS)
 - **Visualização:** Qualquer morador autenticado pode consultar os integrantes e líderes de cada frente (`SELECT` em `front_members`).
 - **Alocação e Liderança:** Apenas Administradores (`role = 'admin'` e `ativo = true`) possuem permissão para vincular moradores a frentes (`INSERT`), alterar a flag de co-liderança `is_lider` (`UPDATE`), ou desvincular membros (`DELETE`), garantindo integridade auditável no banco de dados.
+
+### RN15 - Folha de Misturas Digital e Políticas RLS (daily_meals)
+- **Visualização:** Todos os moradores autenticados (`authenticated`) podem consultar o quadro de refeições diárias da casa (`SELECT` em `daily_meals`). Usuários anônimos têm acesso negado.
+- **Marcação e Atualização (Exclusivas do Dia Vigente):**
+  - Moradores comuns ativos (`ativo = true`) têm permissão para inserir e atualizar (`INSERT` e `UPDATE`) exclusivamente a sua própria linha de refeição do dia de hoje (`data = CURRENT_DATE` e `usuario_id = auth.uid()`).
+  - Dias anteriores (`data < CURRENT_DATE`) permanecem 100% visualizáveis no histórico para consulta e auditoria da casa, mas com alterações estritamente bloqueadas na interface e rejeitadas nas políticas RLS do PostgreSQL.
+  - Moradores inativos (`ativo = false`) têm permissão bloqueada por RLS.
+  - Administradores da república (`public.is_admin()`) têm permissão para inserir ou atualizar a refeição de qualquer morador no dia de hoje (para auxílio e auditoria da cozinha).
+- **Valores Permitidos:** `0.0` (não vai comer / `—`), `0.5` (1 mistura / almoço / `1/2`), `1.0` (2 misturas / cota completa / `X`).
+- **Bloqueio de Datas Futuras:** O app e as regras de negócio proíbem estritamente a navegação ou marcação de refeições para dias posteriores à data atual (`data > CURRENT_DATE`). O seletor de dia desativa o botão de próximo dia ao alcançar a data de hoje.
+- **Sincronização em Tempo Real:** A tabela `daily_meals` é transmitida via `supabase_realtime` para que a folha digital atualize instantaneamente em todos os celulares da casa a cada nova marcação.
+
+### RN16 - Membros Externos e Convidados (Link de Convite, Tela Dedicada e RLS)
+- **Link de Convite e Compartilhamento:**
+  - Gerado com parâmetro de convite (`${origin}/?convite=externo`), permitindo envio via clipboard ou botão direto de WhatsApp.
+  - Ao abrir o link, a tela de autenticação ativa diretamente a aba "Convidado".
+- **Cadastro Simplificado e Ativação Imediata:**
+  - Requer apenas: `apelido na rep`, `telefone/WhatsApp` (para cobrança pelo Caixa), `e-mail` e `senha`. Não exige nem quarto nem geração.
+  - O gatilho `handle_new_user()` cria o perfil com `role = 'externo'`, `ativo = true` imediatamente (sem funil de aprovação pelo admin), possibilitando o registro imediato do almoço no mesmo dia.
+- **Isolamento de Interface (`ConvidadoScreen`):**
+  - O `AuthGuard` intercepta usuários com `role === 'externo'` e renderiza exclusivamente a `ConvidadoScreen`.
+  - Convidados têm visão estritamente restrita: saudação pelo apelido, botão de 1 toque para confirmar que almoçou/jantou hoje, histórico de refeições no mês e botão de logout. Não têm acesso a nenhuma área interna da casa (frentes, faxina, pontos de bagunça, caixas de cerveja ou atas).
+- **Consumo Binário e Resumo da Cozinha:**
+  - A marcação do convidado é binária: `1.0` (comeu na república hoje) ou `0.0` (não marcou / cancelou). Não há fracionamento de cota, visto que o preço de refeição avulsa para convidados é unitário.
+  - A folha de misturas dos moradores (`MisturasScreen`) lista os convidados cadastrados na seção "Convidados & Agregados" e agrega o total de convidados na contagem consolidada da cozinha. Administradores podem alternar a marcação de convidados no dia vigente.
+- **Políticas RLS em `daily_meals` e `profiles`:**
+  - `is_active_externo()`: Função helper SQL que valida `auth.uid()` como convidado ativo (`role = 'externo' AND ativo = true`).
+  - `daily_meals`: Convidado ativo pode ler (`SELECT`), inserir (`INSERT`), atualizar (`UPDATE`) e excluir (`DELETE`) apenas os seus próprios registros no dia de hoje (`usuario_id = auth.uid() AND data = CURRENT_DATE`).
+  - `profiles`: Convidado ativo pode atualizar apenas seus próprios dados cadastrais permitidos (`role IN ('morador', 'externo')`). Moradores ativos e Administradores continuam autorizados a consultar os perfis dos convidados.
 
 ---
 

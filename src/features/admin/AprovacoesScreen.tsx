@@ -93,7 +93,7 @@ export const AprovacoesScreen: React.FC<AprovacoesScreenProps> = ({ onBack }) =>
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h4 className="text-sm font-semibold text-ink">
-                    {p.nome} {p.apelido && <span className="text-muted">({p.apelido})</span>}
+                    {p.apelido || p.nome}
                   </h4>
                   <p className="text-xs text-muted mt-0.5">
                     Geração {p.geracao || '025'} · {p.quarto?.nome || 'Quarto não definido'}

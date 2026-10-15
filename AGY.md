@@ -24,7 +24,7 @@ flowchart TD
         Auth["Supabase Auth (JWT + Magic Links)"]
         Postgres["PostgreSQL Database (Row Level Security - RLS)"]
         Realtime["Realtime Engine (WebSockets para Chats e Marcações)"]
-        Storage["Supabase Storage (Fotos de Faxina, Ocorrências e Chamados)"]
+        Storage["Supabase Storage (Fotos de Faxina, Pontos de Bagunça e Chamados)"]
     end
 
     UI --> State
@@ -178,7 +178,7 @@ classDiagram
         +UUID registrado_por (FK Morador)
     }
 
-    class OCORRENCIA_DESORGANIZACAO {
+    class PONTO_BAGUNCA {
         <<Entidade Forte>>
         +UUID id (PK)
         +UUID relator_id (FK Morador)
@@ -190,10 +190,10 @@ classDiagram
         +DateTime assumida_em
     }
 
-    class MENSAGEM_DISCUSSAO_OCORRENCIA {
+    class MENSAGEM_DISCUSSAO_PONTO_BAGUNCA {
         <<Entidade Fraca>>
         +UUID id (PK)
-        +UUID ocorrencia_id (FK)
+        +UUID ponto_bagunca_id (FK)
         +UUID autor_id (FK Usuario)
         +String conteudo
         +DateTime enviada_em
@@ -292,7 +292,7 @@ classDiagram
   - Herda todos os atributos de `USUARIO`.
   - `geracao` (Simples, Obrigatório): Código da geração de ingresso (ex: `'024'`, `'025'`).
   - `quarto_id` (FK): Quarto onde dorme na casa.
-  - `pontos_mes_atual` (*Atributo Derivado*): Soma das ocorrências de desorganização assumidas no mês corrente.
+  - `pontos_mes_atual` (*Atributo Derivado*): Soma dos pontos de bagunça assumidos no mês corrente.
   - `caixas_pendentes_count` (*Atributo Derivado*): Contagem de caixas de cerveja não liquidadas (`status = 'pendente'`).
 - **Subclasse `MEMBRO_EXTERNO` (Especialização Total e Disjunta - `t, d`):**
   - Herda todos os atributos de `USUARIO`.
@@ -313,7 +313,7 @@ classDiagram
   - `status` (Enum): `'pendente'` $\rightarrow$ `'baixa_solicitada'` $\rightarrow$ `'paga'`.
   - `baixada_em` (DateTime, Nulo se não paga): Data de confirmação da baixa.
   - `baixada_por` (FK para `USUARIO`, Nulo): Admin que auditou a baixa.
-- **`OCORRENCIA_DESORGANIZACAO`:**
+- **`PONTO_BAGUNCA`:**
   - `id` (PK), `relator_id` (FK para `MORADOR`), `culpado_id` (FK para `MORADOR`, `NULL` até que alguém assuma).
   - `foto_url` (Obrigatório): Registro visual da bagunça/copo jogado.
   - `local_descricao`: Onde foi encontrada.
@@ -347,9 +347,9 @@ classDiagram
 - **`REGISTRO_DIARIO_FAXINA` (Entidade Fraca dependente de `ESCALA_SEMANAL_FAXINA`):**
   - Identificada conjuntamente pela escala semanal + data do dia.
   - Atributos: `id` (PK), `(quarto_id, area_comum_id, semana_ano, ano)` (FK composta), `data`, `status` (`'cumprido'`, `'faltou'`), `fotos_comprovacao` (Array de URLs), `registrado_por` (FK `MORADOR`).
-- **`MENSAGEM_DISCUSSAO_OCORRENCIA` (Entidade Fraca de `OCORRENCIA_DESORGANIZACAO`):**
-  - Depende da ocorrência aberta.
-  - Atributos: `id` (PK), `ocorrencia_id` (FK), `autor_id` (FK `USUARIO`), `conteudo`, `enviada_em`.
+- **`MENSAGEM_DISCUSSAO_PONTO_BAGUNCA` (Entidade Fraca de `PONTO_BAGUNCA`):**
+  - Depende do ponto de bagunça aberto.
+  - Atributos: `id` (PK), `ponto_bagunca_id` (FK), `autor_id` (FK `USUARIO`), `conteudo`, `enviada_em`.
 - **`MENSAGEM_CHAT_FRENTE` (Entidade Fraca de `FRENTE`):**
   - Depende da existência da Frente.
   - Atributos: `id` (PK), `frente_id` (FK), `autor_id` (FK `MORADOR`), `conteudo`, `enviada_em`.
@@ -371,9 +371,9 @@ classDiagram
 | **Consome_Mistura** | `USUARIO (0, n)` | $\longleftrightarrow$ | `REGISTRO_MISTURA_DIARIA (1, 1)` | - | Usuário (morador ou externo) possui histórico de refeições diárias registradas. |
 | **Escala_Faxina** | `QUARTO (1, n)` | $\longleftrightarrow$ | `AREA_COMUM (0, n)` | `semana_ano`, `ano` | Gera a entidade associativa com chave natural composta `ESCALA_SEMANAL_FAXINA`. |
 | **Cumpre_Faxina** | `ESCALA_SEMANAL (1, n)`| $\longleftrightarrow$| `REGISTRO_DIARIO_FAXINA (1, 1)` | - | Cada dia da semana exige um registro de cumprimento com foto obrigatória. |
-| **Relata_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `OCORRENCIA (1, 1)` | - | Qualquer morador pode relatar uma desorganização anexando foto. |
-| **Assume_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `OCORRENCIA (0, 1)` | `assumido_em` | Culpado assume o ponto voluntariamente; até a confissão, a ponta destino é nula (0). |
-| **Debate_Infracao** | `OCORRENCIA (1, n)` | $\longleftrightarrow$ | `MENSAGEM_DISCUSSAO (1, 1)` | - | Ocorrência possui uma thread de mensagens em tempo real para apuração. |
+| **Relata_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (1, 1)` | - | Qualquer morador pode relatar um ponto de bagunça anexando foto. |
+| **Assume_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (0, 1)` | `assumido_em` | Culpado assume o ponto voluntariamente; até a confissão, a ponta destino é nula (0). |
+| **Debate_Infracao** | `PONTO_BAGUNCA (1, n)` | $\longleftrightarrow$ | `MENSAGEM_DISCUSSAO (1, 1)` | - | Ponto de Bagunça possui uma thread de mensagens em tempo real para apuração. |
 | **Deve_Cerveja** | `MORADOR (0, n)` | $\longleftrightarrow$ | `CAIXA_CERVEJA (1, 1)` | - | Lançamento estritamente unitário associado a um morador específico. |
 | **Liquida_Cerveja** | `USUARIO (Admin) (0, n)`| $\longleftrightarrow$| `CAIXA_CERVEJA (0, 1)` | `data_liquidacao` | Apenas um Administrador pode efetivar a baixa final da caixa física entregue. |
 | **Solicita_Item** | `MORADOR (0, n)` | $\longleftrightarrow$ | `ITEM_CATALOGO (0, n)` | `mes_ciclo`, `status` | Morador solicita item pré-cadastrado no catálogo mestre gerido pelo Mercado. |
@@ -391,7 +391,7 @@ classDiagram
    * **Totalidade (`t`):** Todo e qualquer registro na superclasse `USUARIO` pertence obrigatoriamente a uma das três subclasses: `MORADOR`, `MEMBRO_EXTERNO` ou `ADMINISTRADOR`.
    * **Disjunção (`d`):** As três categorias são mutuamente exclusivas (um usuário não pode pertencer a mais de uma subclasse simultaneamente).
 2. **Cálculo Derivado de Gatilho de Cerveja:**
-   * $\text{pontos\_mes} = \sum_{\text{mes}} \text{OCORRENCIA}(\text{culpado\_id} = \text{id})$.
+   * $\text{pontos\_mes} = \sum_{\text{mes}} \text{PONTO\_BAGUNCA}(\text{culpado\_id} = \text{id})$.
    * Se $\text{pontos\_mes} \ge 7$, um gatilho de integridade (Database Trigger) insere imediatamente 1 registro unitário em `CAIXA_CERVEJA` com `origem = 'pontos'`.
 3. **Restrição de Integridade Referencial no Catálogo de Mercado:**
    * Moradores comuns não possuem permissão de inserção em `ITEM_CATALOGO_MERCADO`. Toda solicitação vincula-se obrigatoriamente a uma tupla pré-existente no catálogo (`item_id`).
@@ -410,6 +410,18 @@ classDiagram
 7. **Governança de Frentes (`FRONT_MEMBERS`):**
    * **`SELECT`:** Aberto para todos os moradores autenticados consultarem as comissões.
    * **`INSERT`, `UPDATE` e `DELETE`:** Operações exclusivas de Administradores (`public.is_admin()`), protegendo a alocação de moradores e alternância de co-liderança (`is_lider`).
+8. **Folha de Misturas Digital (`DAILY_MEALS` - Supabase RLS):**
+   * **`SELECT`:** Liberado a todos os moradores ativos e administradores (`authenticated`) para visualização de qualquer data e consolidação da contagem para a cozinheira. Convidado externo ativo pode consultar suas próprias refeições.
+   * **`INSERT` e `UPDATE`:** Permitido exclusivamente no dia de hoje (`data = CURRENT_DATE`). Morador comum ativo (`ativo = true`) e Convidado externo ativo (`role = 'externo' AND ativo = true`) podem marcar/alterar exclusivamente a sua própria refeição (`usuario_id = auth.uid()`). Moradores inativos (`ativo = false`) têm escrita bloqueada. Administradores (`public.is_admin()`) têm permissão para marcar ou corrigir a cota de qualquer morador ou convidado no dia vigente.
+   * **`DELETE`:** Permitido ao proprietário ativo ou administrador no dia corrente.
+   * **Travas Cronológicas:** O cliente e as políticas RLS bloqueiam estritamente navegação e marcações para datas posteriores à data atual (`data > CURRENT_DATE`), e tornam datas anteriores (`data < CURRENT_DATE`) estritamente somente leitura (auditáveis, mas imutáveis).
+   * **Realtime:** Transmitida via publicação `supabase_realtime` para atualização instantânea em todos os dispositivos da casa.
+9. **Gestão de Convidados Externos (`MEMBROS_EXTERNOS` / `ConvidadoScreen`):**
+   * **Fluxo de Convite:** Gerado na folha de misturas via link de compartilhamento rápido (`?convite=externo`) e envio para WhatsApp.
+   * **Ativação Imediata:** O trigger `handle_new_user()` cria o perfil com `role = 'externo'` e `ativo = TRUE` (sem aguardar aprovação de admin), permitindo registro instantâneo da refeição.
+   * **Isolamento de Segurança:** O `AuthGuard` direciona usuários `role === 'externo'` exclusivamente para a `ConvidadoScreen`, ocultando dados internos (frentes, faxinas, pontos de bagunça, cervejas, atas).
+   * **Presença Binária:** Convidados registram presença de forma binária (`1.0` = comeu na casa, `0.0` = desmarcado), com histórico mensal acessível para prestação de contas com o Financeiro da casa.
+   * **Vínculo com a Frente Financeiro ("Caixinha"):** Ao implementar a Frente Financeiro, os registros diários de convidados (`daily_meals` com `role = 'externo'`) deverão alimentar diretamente um **Dashboard Mensal de Cobrança**. Esse painel consolidará o total de almoços/jantas de cada convidado por ciclo/mês, multiplicando pelo valor unitário da refeição e disponibilizando botão de acerto/cobrança via WhatsApp com chave PIX da república.
 
 ---
 
@@ -424,7 +436,7 @@ Para otimizar integridade e facilidade de manutenção no PostgreSQL do Supabase
 3. **Onde Mantemos Chaves Artificiais (Surrogate UUIDs):**
    * **`USUARIO`:** O `id (UUID)` é natural do mecanismo criptográfico do Supabase Auth.
    * **`QUARTO` e `AREA_COMUM`:** Mantemos um UUID interno imutável como PK física e o `nome` como `UK`. Isso protege o banco de dados contra **mutações de nomenclatura**: se a república decidir renomear o *"Quarto dos Bixos"* para *"Quarto 026"*, alteramos apenas 1 linha na tabela de quartos, sem precisar disparar atualizações em cascata (`ON UPDATE CASCADE`) em centenas de registros de histórico de faxina dos anos anteriores.
-   * **Entidades Transacionais (`CHAMADO_RAPIDO`, `OCORRENCIA_DESORGANIZACAO`, `CAIXA_CERVEJA`):** Instâncias independentes que possuem ciclo de vida próprio e recebem fotos/comentários.
+   * **Entidades Transacionais (`CHAMADO_RAPIDO`, `PONTO_BAGUNCA`, `CAIXA_CERVEJA`):** Instâncias independentes que possuem ciclo de vida próprio e recebem fotos/comentários.
 
 ---
 
@@ -444,7 +456,7 @@ canta-grillo-app/
 │   │   ├── auth/           # Login, recuperação, perfil, convites
 │   │   ├── refeicoes/      # Folha de misturas (1/2, X), convidados externos
 │   │   ├── faxina/         # Quadro de quartos, envio de fotos, penalidades
-│   │   ├── pontos/         # Ocorrências com foto, chat da infração, assumir ponto
+│   │   ├── pontos/         # Pontos de bagunça com foto, chat da infração, assumir ponto
 │   │   ├── cervejas/       # Mural de caixas unitárias, solicitações de baixa
 │   │   ├── frentes/        # Chats de frentes, chamados rápidos, reunião semanal
 │   │   ├── mercado/        # Catálogo mestre, sugestão restrita, lista de compras
@@ -498,7 +510,7 @@ flowchart LR
 - [x] Configuração do cliente Supabase (`src/lib/supabaseClient.ts`) e `.env`.
 - [x] **Refatoração Editorial / Warm Paper:** Paleta em papel `#f6f5ef`, superfícies `#fffefa`, texto `#16241b`, verde floresta `#0a6b24`, terracota `#b4532f` e tipografia `DM Sans Variable`.
 - [x] **Layout Mobile-First 3-Abas:** Navegação por bottom bar (`Rotina`, `Início` central, `Casa`), header institucional com sino de notificações e pilha interna com botão de retorno (`‹ Voltar`).
-- [x] **Carrossel de Ocorrências na Home:** Visualização em snap horizontal com 4 fotos por vez, modal centralizado ao toque com foco na foto, botão "Assumir ponto" e thread de discussão de mensagens.
+- [x] **Carrossel de Pontos de Bagunça na Home:** Visualização em snap horizontal com 4 fotos por vez, modal centralizado ao toque com foco na foto, botão "Assumir ponto" e thread de discussão de mensagens.
 
 ### Fase 1: Autenticação, Perfis e Controle de Misturas (Almoço/Janta)
 - [x] **Fluxo de Autenticação e Cadastro Completo:** Tela `AuthScreen.tsx` com alternância entre login e cadastro de novo morador (Nome, Apelido, Geração, Quarto dinâmico do banco, E-mail, Senha).
@@ -506,18 +518,21 @@ flowchart LR
 - [x] **Route Guard & Loading Screen:** Componente `AuthGuard.tsx` com splash screen minimalista (`LoadingScreen.tsx`), timeout de segurança de 2.5s contra travamentos, e tela de espera (`PendingApprovalScreen.tsx`) com botão de re-checagem instantânea.
 - [x] **Links Protegidos da Casa:** Hook `useHouseLinks.ts` buscando `drive_url` em `public.house_settings` e a ata mais recente em `public.atas_reuniao`, blindados por RLS para não vazar no bundle client-side.
 - [x] **Gestão e Alocação de Moradores nas Frentes:** Interface `FrentesScreen.tsx` com acesso geral e privilégios de Admin para vincular moradores às 10 frentes, nomear co-líderes (`is_lider`), alternar liderança e remover integrantes no Supabase (`public.front_members`).
-- [ ] **Folha de Misturas Digital Conectada ao Supabase (Próximo Passo Imediato):**
-  - Buscar lista real de moradores da tabela `public.profiles` (`ativo = true`).
-  - Conectar marcações (`—`, `1/2`, `X`) à tabela `public.daily_meals` no Supabase com data do dia (`CURRENT_DATE`).
+- [x] **Folha de Misturas Digital Conectada ao Supabase:**
+  - Busca lista real de moradores da tabela `public.profiles` (`ativo = true`).
+  - Conexão de marcações (`—`, `1/2`, `X`) à tabela `public.daily_meals` no Supabase com data do dia (`CURRENT_DATE`).
+  - Travas cronológicas (dias anteriores somente leitura; dias futuros bloqueados).
   - Sincronização em tempo real (Supabase Realtime) para refletir marcações instantaneamente entre todos os moradores.
-- [ ] Lista de convidados externos:
-  - Registro de misturas de agregados/não-moradores.
-  - Relatório consolidado mensal para a Frente Financeiro ("Caixinha").
+- [x] **Gestão de Convidados Externos:**
+  - Cadastro simplificado via link de convite (`?convite=externo`) e compartilhamento via WhatsApp.
+  - Tela dedicada `ConvidadoScreen` com marcação binária de refeição do dia (`1.0` = comeu).
+  - Listagem de convidados do dia na folha de misturas e agregação no resumo da cozinha.
+  *(A apuração financeira e cobrança foi alocada para a Fase 4, na página dedicada da Frente Financeiro).*
 
 ### Fase 2: Gestão de Limpeza, Pontos Individuais & Quartos
-- [ ] **Módulo de Pontos Individuais:**
-  - Abertura de ocorrência com foto obrigatória (compressão client-side).
-  - Thread de bate-papo em tempo real integrada à ocorrência.
+- [ ] **Módulo de Pontos Individuais (Pontos de Bagunça):**
+  - Abertura de ponto de bagunça com foto obrigatória (compressão client-side).
+  - Thread de bate-papo em tempo real integrada ao ponto de bagunça.
   - Ação do culpado "Assumir Ponto" com atribuição do ponto no perfil.
   - Acúmulo mensal e alerta automático de 7 pontos = 1 caixa de cerveja.
 - [ ] **Módulo de Faxina dos Quartos:**
@@ -537,16 +552,21 @@ flowchart LR
   - Interface dos moradores para solicitação de itens faltantes a partir do catálogo.
   - Lista de compras ativa com checklist para o dia de mercado.
 
-### Fase 4: Sistema Geral de "Funças", Frentes Organizacionais & Chats
+### Fase 4: Sistema Geral de "Funças", Páginas das Frentes Organizacionais & Chats
 - [ ] **Sistema Geral de Funças:**
   - Abertura de Funça geral ou por frente (com título, descrição e foto opcional).
   - Lógica de atribuição:
     - Funça de Frente: Líder atribui a membros ou membros se autoatribuem.
     - Funça Geral: Veterano atribui a seu bixo, Admin atribui a qualquer morador, ou autoatribuição.
   - Painel Centralizado da Reunião Semanal para triagem coletiva de funças pendentes.
-- [ ] **Submódulo Frente Dogs:**
-  - Checklist das 2 refeições diárias (Manhã e Noite) com morador e horário.
-  - Registro de medicamentos e alertas de vermífugos/antipulgas.
+- [ ] **Páginas e Módulos Específicos das Frentes Organizacionais:**
+  - **Frente Financeiro ("Caixinha"):**
+    - **Dashboard Mensal de Cobrança de Convidados:** Puxa os registros de `daily_meals` de todos os convidados (`role = 'externo'`) no mês, calcula o montante devido e disponibiliza envio de fatura/PIX pelo WhatsApp.
+    - Painel de controle de mensalidade fixa dos moradores.
+  - **Frente Dogs:**
+    - Checklist das 2 refeições diárias (Manhã e Noite) com morador e horário.
+    - Registro de medicamentos e alertas de vermífugos/antipulgas.
+  - **Demais Frentes (Piscina, Jardim, Manutenção, PP, Valéria, Hanna, Varanda):** Módulos dedicados para rotinas e chamados.
 - [ ] **Canais de Comunicação (Chats):**
   - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes.
 

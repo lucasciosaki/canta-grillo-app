@@ -11,6 +11,7 @@ interface SignUpData {
   geracao?: string;
   quarto_id?: string;
   role?: 'morador' | 'externo' | 'admin';
+  telefone_contato?: string;
 }
 
 interface AuthContextType {
@@ -158,6 +159,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     geracao,
     quarto_id,
     role = 'morador',
+    telefone_contato,
   }: SignUpData) => {
     try {
       const { data, error } = await supabase.auth.signUp({
@@ -167,8 +169,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           data: {
             nome: nome.trim(),
             apelido: apelido?.trim() || null,
-            geracao: geracao?.trim() || '025',
-            quarto_id: quarto_id || null,
+            geracao: role === 'externo' ? null : (geracao?.trim() || '025'),
+            quarto_id: role === 'externo' ? null : (quarto_id || null),
+            telefone_contato: telefone_contato?.trim() || null,
             role,
           },
         },
@@ -190,13 +193,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.user) {
-        // O perfil é criado no PostgreSQL via trigger handle_new_user(),
-        // cravando ativo = false e role = 'morador' direto no servidor.
-        // Garante que o novo cadastro NÃO entre logado antes da aprovação do Admin:
-        await supabase.auth.signOut();
-        setUser(null);
-        setSession(null);
-        setProfile(null);
+        // Moradores da casa exigem aprovação prévia do Admin no PostgreSQL (ativo = false).
+        // Desloga para evitar sessão pendente antes da aprovação.
+        // Convidados externos (role === 'externo') são ativados imediatamente (ativo = true)
+        // para poderem registrar o almoço/janta na mesma hora.
+        if (role !== 'externo') {
+          await supabase.auth.signOut();
+          setUser(null);
+          setSession(null);
+          setProfile(null);
+        } else {
+          // Se tiver retornado sessão ativa, busca o perfil para entrar imediatamente
+          if (data.session?.user) {
+            await fetchProfile(data.session.user.id, data.session.user);
+            setUser(data.session.user);
+            setSession(data.session);
+          }
+        }
       }
 
       return { error: null };

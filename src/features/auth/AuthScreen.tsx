@@ -16,15 +16,23 @@ const QUARTOS_PADRAO = [
 
 export const AuthScreen: React.FC = () => {
   const { signIn, signUp } = useAuth();
-  const [modo, setModo] = useState<'login' | 'cadastro'>('login');
+
+  // Detecta se a URL contém parâmetro de convite para membros externos (?convite=externo)
+  const isConviteUrl = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('convite') === 'externo';
+
+  const [modo, setModo] = useState<'login' | 'cadastro' | 'convidado'>(
+    isConviteUrl ? 'convidado' : 'login'
+  );
 
   // Formulário
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [nome, setNome] = useState('');
   const [apelido, setApelido] = useState('');
+  const [telefone, setTelefone] = useState('');
   const [geracao, setGeracao] = useState('');
-  const [quartoNome, setQuartoNome] = useState('QUARTOS_PADRAO[1]');
+  const [quartoNome, setQuartoNome] = useState(QUARTOS_PADRAO[1]);
 
   // Lista de quartos do banco
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -73,10 +81,54 @@ export const AuthScreen: React.FC = () => {
             setMensagemErro(`Erro ao entrar: ${error.message}`);
           }
         }
+      } else if (modo === 'convidado') {
+        // Cadastro direto de convidado externo
+        if (!apelido.trim()) {
+          setMensagemErro('Informe seu apelido.');
+          setSubmitting(false);
+          return;
+        }
+        if (!telefone.trim()) {
+          setMensagemErro('Informe seu WhatsApp ou telefone de contato.');
+          setSubmitting(false);
+          return;
+        }
+        if (!email.trim() || password.length < 6) {
+          setMensagemErro('A senha deve ter pelo menos 6 caracteres.');
+          setSubmitting(false);
+          return;
+        }
+
+        const { error } = await signUp({
+          email: email.trim(),
+          password,
+          nome: apelido.trim(),
+          apelido: apelido.trim(),
+          telefone_contato: telefone.trim(),
+          role: 'externo',
+        });
+
+        if (error) {
+          console.error('[AuthScreen] Erro no cadastro de convidado:', error);
+          if (error.message.includes('already registered')) {
+            setMensagemErro('Este e-mail já está cadastrado. Entre na aba "Entrar" com sua senha.');
+          } else {
+            setMensagemErro(`Erro no cadastro de convidado: ${error.message}`);
+          }
+        } else {
+          setMensagemSucesso(
+            'Cadastro de convidado concluído com sucesso! Entrando na área de refeições...'
+          );
+        }
       } else {
-        // Cadastro
+        // Cadastro de morador interno
         if (!nome.trim()) {
           setMensagemErro('Informe seu nome completo.');
+          setSubmitting(false);
+          return;
+        }
+        if (!apelido.trim()) {
+          setMensagemErro('Informe seu apelido na república.');
           setSubmitting(false);
           return;
         }
@@ -145,8 +197,16 @@ export const AuthScreen: React.FC = () => {
           </p>
         </div>
 
-        {/* Abas: Entrar vs Cadastrar */}
-        <div className="grid grid-cols-2 p-1 rounded-lg bg-surface border border-line mb-6">
+        {/* Banner especial caso tenha vindo por link de convite */}
+        {isConviteUrl && (
+          <div className="mb-5 p-3.5 rounded-xl bg-mint border border-forest/30 text-forest text-xs leading-relaxed">
+            <span className="font-bold block text-sm mb-0.5">🦗 Convite para Refeição</span>
+            Você recebeu um convite para almoçar/jantar na Canta Grillo! Crie seu acesso rápido abaixo para registrar sua presença no dia.
+          </div>
+        )}
+
+        {/* Abas: Entrar vs Morador vs Convidado */}
+        <div className="grid grid-cols-3 p-1 rounded-lg bg-surface border border-line mb-6">
           <button
             type="button"
             onClick={() => {
@@ -175,7 +235,22 @@ export const AuthScreen: React.FC = () => {
                 : 'text-muted hover:text-ink'
             }`}
           >
-            Novo Morador
+            Morador
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setModo('convidado');
+              setMensagemErro(null);
+              setMensagemSucesso(null);
+            }}
+            className={`py-2 text-xs font-medium rounded-md transition-colors ${
+              modo === 'convidado'
+                ? 'bg-paper text-ink font-semibold shadow-xs'
+                : 'text-muted hover:text-ink'
+            }`}
+          >
+            Convidado
           </button>
         </div>
 
@@ -194,6 +269,7 @@ export const AuthScreen: React.FC = () => {
 
         {/* Formulário */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* CAMPOS EXCLUSIVOS DO CADASTRO DE MORADOR INTERNO */}
           {modo === 'cadastro' && (
             <>
               <div>
@@ -205,7 +281,6 @@ export const AuthScreen: React.FC = () => {
                   required
                   value={nome}
                   onChange={(e) => setNome(e.target.value)}
-    
                   className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm placeholder:text-muted/60 focus:outline-none focus:border-forest"
                 />
               </div>
@@ -217,9 +292,10 @@ export const AuthScreen: React.FC = () => {
                   </label>
                   <input
                     type="text"
+                    required
                     value={apelido}
                     onChange={(e) => setApelido(e.target.value)}
-                  
+                    placeholder="Ex: Jumento"
                     className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm placeholder:text-muted/60 focus:outline-none focus:border-forest"
                   />
                 </div>
@@ -257,6 +333,40 @@ export const AuthScreen: React.FC = () => {
             </>
           )}
 
+          {/* CAMPOS EXCLUSIVOS DO CADASTRO DE CONVIDADO EXTERNO */}
+          {modo === 'convidado' && (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">
+                  Seu apelido <span className="text-forest font-semibold">(como te chamam na rep)</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={apelido}
+                  onChange={(e) => setApelido(e.target.value)}
+                  placeholder="Ex: Alemão, Bruninho, etc."
+                  className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm placeholder:text-muted/60 focus:outline-none focus:border-forest"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1">
+                  WhatsApp / Telefone <span className="text-muted">(para acerto com o Caixa)</span>
+                </label>
+                <input
+                  type="tel"
+                  required
+                  value={telefone}
+                  onChange={(e) => setTelefone(e.target.value)}
+                  placeholder="(19) 99999-9999"
+                  className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm placeholder:text-muted/60 focus:outline-none focus:border-forest"
+                />
+              </div>
+            </>
+          )}
+
+          {/* CAMPOS COMUNS (E-mail e Senha) */}
           <div>
             <label className="block text-xs font-medium text-muted mb-1">
               E-mail
@@ -273,7 +383,7 @@ export const AuthScreen: React.FC = () => {
 
           <div>
             <label className="block text-xs font-medium text-muted mb-1">
-              Senha {modo === 'cadastro' && <span className="text-muted">(mín. 6 dígitos)</span>}
+              Senha {modo !== 'login' && <span className="text-muted">(mín. 6 dígitos)</span>}
             </label>
             <input
               type="password"
@@ -292,15 +402,45 @@ export const AuthScreen: React.FC = () => {
                   ? 'Entrando...'
                   : 'Criando conta...'
                 : modo === 'login'
-                ? 'Entrar na casa'
+                ? 'Entrar'
+                : modo === 'convidado'
+                ? 'Cadastrar e marcar refeição'
                 : 'Cadastrar morador'}
             </Button>
           </div>
         </form>
 
-        <p className="text-[11px] text-muted text-center mt-6">
-          Acesso restrito aos moradores e agregados da República Canta Grillo.
-        </p>
+        {modo !== 'convidado' ? (
+          <p className="text-[11px] text-muted text-center mt-6">
+            Vai comer na república hoje?{' '}
+            <button
+              type="button"
+              onClick={() => {
+                setModo('convidado');
+                setMensagemErro(null);
+                setMensagemSucesso(null);
+              }}
+              className="text-forest font-semibold hover:underline"
+            >
+              Cadastre-se como convidado
+            </button>
+          </p>
+        ) : (
+          <p className="text-[11px] text-muted text-center mt-6">
+            Já tem cadastro?{' '}
+            <button
+              type="button"
+              onClick={() => {
+                setModo('login');
+                setMensagemErro(null);
+                setMensagemSucesso(null);
+              }}
+              className="text-forest font-semibold hover:underline"
+            >
+              Fazer login
+            </button>
+          </p>
+        )}
       </div>
     </div>
   );

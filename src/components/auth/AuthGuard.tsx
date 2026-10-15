@@ -3,6 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { LoadingScreen } from './LoadingScreen';
 import { PendingApprovalScreen } from './PendingApprovalScreen';
 import { AuthScreen } from '../../features/auth/AuthScreen';
+import { ConvidadoScreen } from '../../features/convidados/ConvidadoScreen';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -13,9 +14,10 @@ interface AuthGuardProps {
  * 
  * Fluxo de verificação resiliente:
  * 1. loading === true: Exibe tela de carregamento breve (com timeout de segurança de 2.5s para nunca travar).
- * 2. !user: Exibe tela de autenticação (Login / Cadastro de novo morador).
- * 3. profile.ativo === false: Bloqueia acesso e exibe tela de "Cadastro em Análise".
- * 4. Acesso liberado: Renderiza a aplicação interna imediatamente.
+ * 2. !user: Exibe tela de autenticação (Login / Cadastro de morador ou convidado).
+ * 3. profile.ativo === false: Bloqueia acesso e exibe tela de "Cadastro em Análise" (moradores da casa).
+ * 4. profile.role === 'externo': Redireciona para tela dedicada do Convidado (isolamento de segurança total).
+ * 5. Morador autenticado e ativo -> Acesso liberado à Home e demais telas da república.
  */
 export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   const { user, profile, loading, signOut } = useAuth();
@@ -45,6 +47,11 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     return <PendingApprovalScreen />;
   }
 
-  // 4. Usuário autenticado e ativo -> Acesso liberado à Home e demais telas
+  // 4. Convidado Externo: Acesso restrito e exclusivo à tela de refeições do convidado
+  if (profile?.role === 'externo') {
+    return <ConvidadoScreen />;
+  }
+
+  // 5. Usuário autenticado e ativo -> Acesso liberado à Home e demais telas
   return <>{children}</>;
 };

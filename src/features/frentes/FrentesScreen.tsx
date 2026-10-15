@@ -176,7 +176,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
             const fm = membros.filter((m) => m.front_id === f.id);
             const lideresNomes = fm
               .filter((m) => m.is_lider)
-              .map((m) => m.profile?.apelido || m.profile?.nome?.split(' ')[0] || 'Líder')
+              .map((m) => m.profile?.apelido || m.profile?.nome || 'Líder')
               .join(', ');
 
             return (
@@ -269,13 +269,8 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                         className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
                       >
                         <div>
-                          <p className="text-sm font-semibold text-ink flex items-center gap-1.5">
-                            {m.profile?.nome}
-                            {m.profile?.apelido && (
-                              <span className="text-xs font-normal text-muted">
-                                ({m.profile.apelido})
-                              </span>
-                            )}
+                          <p className="text-sm font-semibold text-ink">
+                            {m.profile?.apelido || m.profile?.nome}
                           </p>
                           <p className="text-[11px] text-muted">
                             Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
@@ -329,13 +324,8 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                         className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
                       >
                         <div>
-                          <p className="text-sm font-semibold text-ink flex items-center gap-1.5">
-                            {m.profile?.nome}
-                            {m.profile?.apelido && (
-                              <span className="text-xs font-normal text-muted">
-                                ({m.profile.apelido})
-                              </span>
-                            )}
+                          <p className="text-sm font-semibold text-ink">
+                            {m.profile?.apelido || m.profile?.nome}
                           </p>
                           <p className="text-[11px] text-muted">
                             Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
@@ -417,7 +407,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                   >
                     {moradoresDisponiveis.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.nome} {m.apelido ? `(${m.apelido})` : ''} — Geração {m.geracao || '025'}
+                        {m.apelido || m.nome} — Geração {m.geracao || '025'}
                       </option>
                     ))}
                   </select>

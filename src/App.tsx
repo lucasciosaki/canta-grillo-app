@@ -1,23 +1,24 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
 import { PhotoForm } from './components/PhotoForm';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
-import { ocorrenciasMock } from './data/ocorrenciasMock';
-import { OcorrenciasCarousel } from './components/OcorrenciasCarousel';
+import { pontosBaguncaMock } from './data/pontosBaguncaMock';
+import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
 import { useAuth } from './contexts/AuthContext';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { AprovacoesScreen } from './features/admin/AprovacoesScreen';
 import { FrentesScreen } from './features/frentes/FrentesScreen';
+import { MisturasScreen } from './features/refeicoes/MisturasScreen';
+import { supabase } from './lib/supabaseClient';
+import { getLocalDateString, numericToMarca } from './types/refeicoes';
 
 type Screen =
   | 'home' | 'rotina' | 'casa'
-  | 'misturas' | 'quadro' | 'ocorrencia'
+  | 'misturas' | 'quadro' | 'pontoBagunca'
   | 'funcas' | 'cervejas' | 'frentes'
   | 'aprovacoes';
-
-type Marca = '—' | '1/2' | 'X';
 
 const screenTitle: Record<Screen, string> = {
   home: 'Início',
@@ -25,20 +26,12 @@ const screenTitle: Record<Screen, string> = {
   casa: 'Casa',
   misturas: 'Misturas',
   quadro: 'Quadro de pontos',
-  ocorrencia: 'Ocorrência de ponto',
+  pontoBagunca: 'Ponto de Bagunça',
   funcas: 'Funças',
   cervejas: 'Cervejas',
   frentes: 'Frentes',
   aprovacoes: 'Aprovações',
 };
-
-const moradores: { nome: string; marca: Marca }[] = [
-  { nome: 'Rodrigo "Cachorrão"', marca: '1/2' },
-  { nome: 'Lucas "Bixo 1"', marca: 'X' },
-  { nome: 'Matheus "025"', marca: '1/2' },
-  { nome: 'Pedro "Valéria"', marca: '—' },
-  { nome: 'Gabriel "Caixinha"', marca: 'X' },
-];
 
 const funcas = [
   { title: 'Trocar lâmpada do corredor', frente: 'Manutenção', status: 'Aberta', minha: true },
@@ -48,9 +41,9 @@ const funcas = [
 ];
 
 const dividas = [
-  { devedor: 'Felipe "025"', motivo: 'Passou no estágio', status: 'Pendente' },
-  { devedor: 'Gabriel "026"', motivo: 'Começou a namorar', status: 'Baixa solicitada' },
-  { devedor: 'Lucas "Bixo"', motivo: '7 pontos em outubro', status: 'Pendente' },
+  { devedor: 'Ganso', motivo: 'Passou no estágio', status: 'Pendente' },
+  { devedor: 'Cachorrão', motivo: 'Começou a namorar', status: 'Baixa solicitada' },
+  { devedor: 'Bixo 026', motivo: '7 pontos em outubro', status: 'Pendente' },
 ];
 
 
@@ -62,11 +55,35 @@ function MainApp() {
 
   // Pilha de navegação: a primeira tela é a aba ativa; as demais são telas internas.
   const [stack, setStack] = useState<Screen[]>(['home']);
-  const [minhaMarca, setMinhaMarca] = useState<Marca>('1/2');
-  const [ocorrencias, setOcorrencias] = useState(ocorrenciasMock);
+  const [pontosBagunca, setPontosBagunca] = useState(pontosBaguncaMock);
+  const [minhaMarcaHoje, setMinhaMarcaHoje] = useState<string | null>(null);
+  const [totalMisturasHoje, setTotalMisturasHoje] = useState<number | null>(null);
 
   const screen = stack[stack.length - 1];
   const previous = stack.length > 1 ? stack[stack.length - 2] : null;
+
+  // Carrega resumo do dia de hoje para o card da Home
+  useEffect(() => {
+    if (!user?.id) return;
+    const hoje = getLocalDateString(new Date());
+    supabase
+      .from('daily_meals')
+      .select('usuario_id, misturas_consumidas')
+      .eq('data', hoje)
+      .then(({ data, error }) => {
+        if (!error && data) {
+          let total = 0;
+          let meuValor: number | null = null;
+          data.forEach((m) => {
+            const val = Number(m.misturas_consumidas);
+            total += val;
+            if (m.usuario_id === user.id) meuValor = val;
+          });
+          setTotalMisturasHoje(total);
+          setMinhaMarcaHoje(numericToMarca(meuValor));
+        }
+      });
+  }, [user?.id, screen]);
 
   const go = (s: Screen) => setStack((st) => [...st, s]);
   const goBack = () => setStack((st) => st.slice(0, -1));
@@ -75,9 +92,10 @@ function MainApp() {
   const back = previous ? { label: screenTitle[previous], onClick: goBack } : undefined;
   const funcasPendentes = funcas.filter((f) => f.minha);
 
-  // Nome e identificação dinâmica do morador logado
+  // Identificação dinâmica do morador logado (estritamente apelido da república)
   const nomeExibicao =
     profile?.apelido ||
+    user?.user_metadata?.apelido ||
     profile?.nome?.split(' ')[0] ||
     user?.user_metadata?.nome?.split(' ')[0] ||
     user?.email?.split('@')[0] ||
@@ -87,7 +105,7 @@ function MainApp() {
   const quartoExibicao = profile?.quarto?.nome || 'Quarto';
 
   const handleAssumirPonto = (id: string) => {
-    setOcorrencias((prev) =>
+    setPontosBagunca((prev) =>
       prev.map((o) => (o.id === id ? { ...o, status: 'assumida' as const } : o))
     );
   };
@@ -95,7 +113,7 @@ function MainApp() {
   const handleEnviarMensagem = (id: string, texto: string) => {
     const agora = new Date();
     const hora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    setOcorrencias((prev) =>
+    setPontosBagunca((prev) =>
       prev.map((o) =>
         o.id === id
           ? {
@@ -124,18 +142,37 @@ function MainApp() {
               </h2>
             </div>
 
-            {/* Carrossel de ocorrências pendentes (mostra 4 fotos por vez com thread centralizada) */}
-            <OcorrenciasCarousel
-              ocorrencias={ocorrencias}
+            {/* Carrossel de pontos de bagunça pendentes (mostra 4 fotos por vez com thread centralizada) */}
+            <PontosBaguncaCarousel
+              pontosBagunca={pontosBagunca}
               onAssumirPonto={handleAssumirPonto}
               onEnviarMensagem={handleEnviarMensagem}
             />
 
             <div className="space-y-2.5 mb-7">
-              <Button full onClick={() => go('misturas')}>Marcar almoço</Button>
+              <button
+                onClick={() => go('misturas')}
+                className="w-full p-4 rounded-xl bg-forest hover:bg-forest-dark text-white flex items-center justify-between text-left transition-all active:scale-[0.99] shadow-xs"
+              >
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-white/80 font-bold">Folha de Misturas</p>
+                  <h3 className="text-base font-semibold mt-0.5">Marcar almoço e janta</h3>
+                  {totalMisturasHoje !== null && (
+                    <p className="text-xs text-white/80 mt-1">
+                      {totalMisturasHoje.toFixed(1).replace('.0', '')} misturas hoje na república
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-white/80 block uppercase font-medium">Sua cota</span>
+                  <span className="inline-block mt-0.5 px-3 py-1 rounded-lg bg-white/20 font-bold text-lg leading-tight backdrop-blur-xs">
+                    {minhaMarcaHoje || '—'}
+                  </span>
+                </div>
+              </button>
               <div className="grid grid-cols-2 gap-2.5">
                 <Button variant="outline" onClick={() => go('quadro')}>Foto do quadro</Button>
-                <Button variant="outline" onClick={() => go('ocorrencia')}>Foto de ocorrência</Button>
+                <Button variant="outline" onClick={() => go('pontoBagunca')}>Ponto de Bagunça</Button>
               </div>
             </div>
 
@@ -174,7 +211,7 @@ function MainApp() {
             <Section>
               <Row title="Misturas" meta="Marcar almoço e janta" onClick={() => go('misturas')} right={chevron} />
               <Row title="Quadro de pontos" meta="Foto semanal do quadro" onClick={() => go('quadro')} right={chevron} />
-              <Row title="Ocorrência de ponto" meta="Registrar ponto individual com foto" onClick={() => go('ocorrencia')} right={chevron} />
+              <Row title="Ponto de Bagunça" meta="Registrar ponto individual com foto" onClick={() => go('pontoBagunca')} right={chevron} />
             </Section>
           </>
         );
@@ -208,41 +245,7 @@ function MainApp() {
         );
 
       case 'misturas':
-        return (
-          <>
-            <PageTitle title="Misturas" hint="Marque sua cota de hoje" back={back} />
-
-            <div className="grid grid-cols-3 gap-2 mb-7">
-              {(['—', '1/2', 'X'] as Marca[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMinhaMarca(m)}
-                  className={`py-4 rounded-lg text-xl font-semibold transition-colors ${
-                    minhaMarca === m
-                      ? 'bg-forest text-white'
-                      : 'bg-surface border border-line text-ink'
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-
-            <Section title="Moradores">
-              {moradores.map((m) => (
-                <Row
-                  key={m.nome}
-                  title={m.nome}
-                  right={
-                    <span className="text-sm font-semibold text-forest tabular">
-                      {m.nome.startsWith('Rodrigo') ? minhaMarca : m.marca}
-                    </span>
-                  }
-                />
-              ))}
-            </Section>
-          </>
-        );
+        return <MisturasScreen onBack={goBack} />;
 
       case 'quadro':
         return (
@@ -252,11 +255,11 @@ function MainApp() {
           </>
         );
 
-      case 'ocorrencia':
+      case 'pontoBagunca':
         return (
           <>
-            <PageTitle title="Ocorrência de ponto" hint="Registre um ponto individual" back={back} />
-            <PhotoForm submitLabel="Registrar ocorrência" sentMessage="Ocorrência registrada.">
+            <PageTitle title="Ponto de Bagunça" hint="Registre um ponto individual com foto" back={back} />
+            <PhotoForm submitLabel="Registrar Ponto de Bagunça" sentMessage="Ponto de Bagunça registrado.">
               <label className="block">
                 <span className="text-xs font-medium text-muted">O que aconteceu?</span>
                 <textarea
