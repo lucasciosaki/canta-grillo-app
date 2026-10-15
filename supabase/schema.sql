@@ -397,3 +397,56 @@ USING (public.is_admin());
 DROP POLICY IF EXISTS "Permitir insercao de perfil no cadastro" ON public.profiles;
 DROP POLICY IF EXISTS "Cadastro de perfil seguro" ON public.profiles;
 
+-- TRIGGER DE PROTEÇÃO DE COLUNAS CRÍTICAS (ativo e role)
+CREATE OR REPLACE FUNCTION public.protect_profile_roles()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    -- Morador comum não pode alterar o próprio 'ativo' (auto-aprovação)
+    IF NEW.ativo IS DISTINCT FROM OLD.ativo THEN
+      RAISE EXCEPTION 'Apenas administradores podem aprovar ou alterar o status ativo de um morador.';
+    END IF;
+    -- Morador comum não pode alterar o próprio 'role' (auto-promoção para admin)
+    IF NEW.role IS DISTINCT FROM OLD.role THEN
+      RAISE EXCEPTION 'Apenas administradores podem alterar o cargo (role) de um usuário.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_protect_profile_roles ON public.profiles;
+CREATE TRIGGER trg_protect_profile_roles
+BEFORE UPDATE ON public.profiles
+FOR EACH ROW
+EXECUTE FUNCTION public.protect_profile_roles();
+
+-- ==============================================================================
+-- 3. TABELA FRONT_MEMBERS (Frentes Organizacionais)
+-- ==============================================================================
+ALTER TABLE public.front_members ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Todos podem ler membros das frentes" ON public.front_members;
+CREATE POLICY "Todos podem ler membros das frentes"
+ON public.front_members FOR SELECT
+TO authenticated
+USING (true);
+
+DROP POLICY IF EXISTS "Apenas admin insere membros na frente" ON public.front_members;
+CREATE POLICY "Apenas admin insere membros na frente"
+ON public.front_members FOR INSERT
+TO authenticated
+WITH CHECK (public.is_admin());
+
+DROP POLICY IF EXISTS "Apenas admin altera lideranca" ON public.front_members;
+CREATE POLICY "Apenas admin altera lideranca"
+ON public.front_members FOR UPDATE
+TO authenticated
+USING (public.is_admin());
+
+DROP POLICY IF EXISTS "Apenas admin remove membros da frente" ON public.front_members;
+CREATE POLICY "Apenas admin remove membros da frente"
+ON public.front_members FOR DELETE
+TO authenticated
+USING (public.is_admin());
+

@@ -404,9 +404,12 @@ classDiagram
    * **`PROFILES`:** A tabela permanece fechada contra `INSERT` via API client-side. A inserção ocorre unicamente via trigger `handle_new_user()` (`SECURITY DEFINER`) cravando `ativo = FALSE` e `role = 'morador'`.
    * **Políticas RLS em `PROFILES`:**
      - `SELECT`: Permitido a todos os usuários autenticados (`authenticated`).
-     - `UPDATE`: Administrador pode atualizar qualquer perfil (`public.is_admin()`); morador comum atualiza apenas seus próprios dados cadastrais e é impedido de auto-promoção de `role` ou ativação de `ativo`.
+     - `UPDATE`: Administrador pode atualizar qualquer perfil (`public.is_admin()`); morador comum atualiza apenas seus próprios dados cadastrais. Gatilho de segurança `trg_protect_profile_roles` impede estritamente que não-administradores alterem as colunas `ativo` e `role`.
      - `DELETE`: Exclusivo do Administrador (`public.is_admin()`).
    * **`ROOMS`:** Leitura pública (`anon` e `authenticated`) para permitir a listagem de quartos no fluxo de cadastro de novo morador.
+7. **Governança de Frentes (`FRONT_MEMBERS`):**
+   * **`SELECT`:** Aberto para todos os moradores autenticados consultarem as comissões.
+   * **`INSERT`, `UPDATE` e `DELETE`:** Operações exclusivas de Administradores (`public.is_admin()`), protegendo a alocação de moradores e alternância de co-liderança (`is_lider`).
 
 ---
 

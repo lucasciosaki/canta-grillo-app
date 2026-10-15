@@ -173,6 +173,20 @@ Para validar a compilação TypeScript e gerar os arquivos otimizados do PWA em 
 npm run build
 ```
 
+### 7. Testes Automatizados
+O projeto possui suítes de testes automatizados utilizando o test runner nativo do Node.js (`node:test`):
+
+```bash
+# Executa testes unitários de lógica de acesso, guards e sanitização (offline / rápido)
+npm test
+
+# Executa testes de penetração e validação de Row Level Security (RLS) contra o Supabase
+npm run test:security
+
+# Executa todos os testes do projeto
+npm run test:all
+```
+
 ---
 
 ## 📄 Licença e Uso

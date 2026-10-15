@@ -211,12 +211,16 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 ### RN13 - Autenticação, Aprovação de Moradores e Políticas RLS (Database-First)
 - **Criação de Contas:** Clientes não possuem permissão de `INSERT` na tabela `public.profiles`. O registro ocorre exclusivamente via gatilho de banco de dados (`handle_new_user()` em `SECURITY DEFINER`), garantindo que todo novo morador nasça com `ativo = false` e `role = 'morador'`.
 - **Aprovação:** Enquanto `ativo = false`, o morador tem o acesso bloqueado e permanece na tela de "Cadastro em Análise". Somente o Administrador (`role = 'admin'` e `ativo = true`) pode aprovar o perfil (`ativo = true`), via `AprovacoesScreen`.
-- **Políticas RLS em `public.profiles`:**
-  - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`).
+- **Políticas RLS e Trigger de Proteção em `public.profiles`:**
+  - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`). Usuários anônimos não podem listar moradores.
   - `INSERT`: Bloqueado para clientes (exclusivo do gatilho no PostgreSQL).
-  - `UPDATE`: Administradores podem atualizar qualquer perfil; moradores comuns podem atualizar apenas seus próprios dados cadastrais (nome, apelido), sendo impedidos de alterar `role` ou `ativo`.
+  - `UPDATE`: Administradores podem atualizar qualquer perfil. Moradores comuns podem atualizar apenas seus próprios dados cadastrais permitidos (nome, apelido), com validação dupla: cláusula `WITH CHECK` e gatilho de proteção `trg_protect_profile_roles` que lança exceção em qualquer tentativa de auto-aprovação (`ativo = true`) ou auto-promoção (`role = 'admin'`).
   - `DELETE`: Exclusivo para administradores (recusa de cadastro).
 - **Leitura de Quartos:** A tabela `public.rooms` possui política de leitura aberta (`anon` e `authenticated`) para viabilizar a seleção de quarto durante o formulário de cadastro inicial.
+
+### RN14 - Governança das Frentes e Co-Lideranças (Database-First RLS)
+- **Visualização:** Qualquer morador autenticado pode consultar os integrantes e líderes de cada frente (`SELECT` em `front_members`).
+- **Alocação e Liderança:** Apenas Administradores (`role = 'admin'` e `ativo = true`) possuem permissão para vincular moradores a frentes (`INSERT`), alterar a flag de co-liderança `is_lider` (`UPDATE`), ou desvincular membros (`DELETE`), garantindo integridade auditável no banco de dados.
 
 ---
 
