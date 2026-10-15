@@ -350,6 +350,10 @@ classDiagram
 - **`MENSAGEM_DISCUSSAO_PONTO_BAGUNCA` (Entidade Fraca de `PONTO_BAGUNCA`):**
   - Depende do ponto de bagunça aberto.
   - Atributos: `id` (PK), `ponto_bagunca_id` (FK), `autor_id` (FK `USUARIO`), `conteudo`, `enviada_em`.
+- **`PONTOS_BAGUNCA_VISUALIZACOES` (Entidade Associativa com Chave Composta Natural):**
+  - **Chave Composta:** `PRIMARY KEY (ponto_id, morador_id)`.
+  - Atributos adicionais: `visualizado_em` (DateTime).
+  - Rastreia a remoção individual do filtro de desfoque (`blur`) e o cumprimento da verificação obrigatória em 24 horas por cada morador.
 - **`MENSAGEM_CHAT_FRENTE` (Entidade Fraca de `FRENTE`):**
   - Depende da existência da Frente.
   - Atributos: `id` (PK), `frente_id` (FK), `autor_id` (FK `MORADOR`), `conteudo`, `enviada_em`.
@@ -422,6 +426,14 @@ classDiagram
    * **Isolamento de Segurança:** O `AuthGuard` direciona usuários `role === 'externo'` exclusivamente para a `ConvidadoScreen`, ocultando dados internos (frentes, faxinas, pontos de bagunça, cervejas, atas).
    * **Presença Binária:** Convidados registram presença de forma binária (`1.0` = comeu na casa, `0.0` = desmarcado), com histórico mensal acessível para prestação de contas com o Financeiro da casa.
    * **Vínculo com a Frente Financeiro ("Caixinha"):** Ao implementar a Frente Financeiro, os registros diários de convidados (`daily_meals` com `role = 'externo'`) deverão alimentar diretamente um **Dashboard Mensal de Cobrança**. Esse painel consolidará o total de almoços/jantas de cada convidado por ciclo/mês, multiplicando pelo valor unitário da refeição e disponibilizando botão de acerto/cobrança via WhatsApp com chave PIX da república.
+10. **Pontos de Bagunça, Mecânica de Blur e Regra de 24h (`PONTOS_BAGUNCA_VISUALIZACOES` - Supabase RLS):**
+   * **Visualização Individual:** Cards de pontos abertos no carrossel da Home iniciam com filtro `blur-md` e badge com contagem regressiva de 24h a partir de `created_at`. O autor do ponto (relator) nunca visualiza com blur.
+   * **Desbloqueio e Auditoria:** Ao tocar no card, a foto é desfeita de blur e registrada na tabela associativa `pontos_bagunca_visualizacoes(ponto_id, morador_id)`.
+   * **Políticas RLS em `PONTOS_BAGUNCA_VISUALIZACOES`:**
+     - `SELECT`: Permitido para qualquer usuário autenticado (`authenticated`).
+     - `INSERT`: Permitido para morador ativo (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
+   * **Penalidade Automática das 24 Horas:** A função do banco `public.verificar_penalidades_pontos_24h()` aplica 1 ponto de bagunça para qualquer morador ativo que não abrir a imagem após 24h da abertura. Se o culpado assumir a infração antes das 24h (`status = 'assumida'`), a penalidade de não-leitura é desativada para todos.
+   * **Realtime:** Integrada à publicação `supabase_realtime` para sincronização instantânea de novas denúncias, visualizações e mensagens de apuração.
 
 ---
 

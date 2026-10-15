@@ -1,18 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
 import { PhotoForm } from './components/PhotoForm';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
-import { pontosBaguncaMock } from './data/pontosBaguncaMock';
 import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
 import { useAuth } from './contexts/AuthContext';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { AprovacoesScreen } from './features/admin/AprovacoesScreen';
 import { FrentesScreen } from './features/frentes/FrentesScreen';
 import { MisturasScreen } from './features/refeicoes/MisturasScreen';
+import { DenunciaPontoScreen } from './features/pontos/DenunciaPontoScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
+import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
 
 type Screen =
   | 'home' | 'rotina' | 'casa'
@@ -55,12 +56,109 @@ function MainApp() {
 
   // Pilha de navegação: a primeira tela é a aba ativa; as demais são telas internas.
   const [stack, setStack] = useState<Screen[]>(['home']);
-  const [pontosBagunca, setPontosBagunca] = useState(pontosBaguncaMock);
+  const [pontosBagunca, setPontosBagunca] = useState<PontoBagunca[]>([]);
+  const [visualizacoesIds, setVisualizacoesIds] = useState<Set<string>>(new Set());
+  const [mensagensMap, setMensagensMap] = useState<Record<string, MensagemPontoBagunca[]>>({});
+
   const [minhaMarcaHoje, setMinhaMarcaHoje] = useState<string | null>(null);
   const [totalMisturasHoje, setTotalMisturasHoje] = useState<number | null>(null);
 
   const screen = stack[stack.length - 1];
   const previous = stack.length > 1 ? stack[stack.length - 2] : null;
+
+  // Carrega pontos de bagunça, visualizações e mensagens do Supabase
+  const carregarPontosBagunca = useCallback(async () => {
+    try {
+      // 1. Busca pontos abertos
+      const { data: pontosRaw } = await supabase
+        .from('pontos_bagunca')
+        .select('*')
+        .eq('status', 'aberta')
+        .order('created_at', { ascending: false });
+
+      if (!pontosRaw) return;
+
+      // 2. Busca perfis para exibição estrita de apelido
+      const { data: perfisRaw } = await supabase
+        .from('profiles')
+        .select('id, nome, apelido');
+
+      const perfisMap: Record<string, { id: string; nome: string; apelido: string | null }> = {};
+      perfisRaw?.forEach((p) => {
+        perfisMap[p.id] = p;
+      });
+
+      const formatados: PontoBagunca[] = pontosRaw.map((p) => ({
+        ...p,
+        relator: perfisMap[p.relator_id] || null,
+        culpado: p.culpado_id ? perfisMap[p.culpado_id] || null : null,
+      }));
+
+      setPontosBagunca(formatados);
+
+      // 3. Busca visualizações do morador logado para controle do blur
+      if (user?.id) {
+        const { data: visData } = await supabase
+          .from('pontos_bagunca_visualizacoes')
+          .select('ponto_id')
+          .eq('morador_id', user.id);
+
+        if (visData) {
+          setVisualizacoesIds(new Set(visData.map((v) => v.ponto_id)));
+        }
+      }
+
+      // 4. Busca mensagens de discussão
+      const { data: msgRaw } = await supabase
+        .from('mensagens_ponto_bagunca')
+        .select('*')
+        .order('enviada_em', { ascending: true });
+
+      if (msgRaw) {
+        const mapa: Record<string, MensagemPontoBagunca[]> = {};
+        msgRaw.forEach((m) => {
+          if (!mapa[m.ponto_bagunca_id]) mapa[m.ponto_bagunca_id] = [];
+          mapa[m.ponto_bagunca_id].push({
+            ...m,
+            autor: perfisMap[m.autor_id] || null,
+          });
+        });
+        setMensagensMap(mapa);
+      }
+    } catch (err) {
+      console.error('[App] Erro ao carregar pontos de bagunça:', err);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    carregarPontosBagunca();
+  }, [carregarPontosBagunca]);
+
+  // Realtime para pontos de bagunça, mensagens e visualizações
+  useEffect(() => {
+    const channel = supabase
+      .channel('pontos-bagunca-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pontos_bagunca' },
+        () => carregarPontosBagunca()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' },
+        () => carregarPontosBagunca()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' },
+        () => carregarPontosBagunca()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [carregarPontosBagunca]);
 
   // Carrega resumo do dia de hoje para o card da Home
   useEffect(() => {
@@ -104,28 +202,78 @@ function MainApp() {
   const geracaoExibicao = profile?.geracao || user?.user_metadata?.geracao || '025';
   const quartoExibicao = profile?.quarto?.nome || 'Quarto';
 
-  const handleAssumirPonto = (id: string) => {
-    setPontosBagunca((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: 'assumida' as const } : o))
-    );
+  // Registra abertura do ponto (remove blur imediatamente)
+  const handleAbrirPonto = async (pontoId: string) => {
+    if (!user?.id) return;
+
+    // Atualização otimista
+    setVisualizacoesIds((prev) => new Set(prev).add(pontoId));
+
+    try {
+      await supabase
+        .from('pontos_bagunca_visualizacoes')
+        .upsert(
+          { ponto_id: pontoId, morador_id: user.id },
+          { onConflict: 'ponto_id,morador_id' }
+        );
+    } catch (err) {
+      console.error('[App] Erro ao registrar visualização:', err);
+    }
   };
 
-  const handleEnviarMensagem = (id: string, texto: string) => {
-    const agora = new Date();
-    const hora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    setPontosBagunca((prev) =>
-      prev.map((o) =>
-        o.id === id
-          ? {
-              ...o,
-              mensagens: [
-                ...o.mensagens,
-                { autor: nomeExibicao, texto, hora },
-              ],
-            }
-          : o
-      )
-    );
+  // Morador assume a culpa do ponto de bagunça
+  const handleAssumirPonto = async (id: string) => {
+    if (!user?.id) return;
+
+    // Otimista: remove do carrossel de abertos
+    setPontosBagunca((prev) => prev.filter((p) => p.id !== id));
+
+    const { error } = await supabase
+      .from('pontos_bagunca')
+      .update({
+        status: 'assumida',
+        culpado_id: user.id,
+        assumida_em: new Date().toISOString(),
+      })
+      .eq('id', id);
+
+    if (error) {
+      alert('Erro ao assumir ponto: ' + error.message);
+      carregarPontosBagunca();
+    }
+  };
+
+  // Envio de mensagem na thread do ponto de bagunça
+  const handleEnviarMensagem = async (id: string, texto: string) => {
+    if (!user?.id || !texto.trim()) return;
+
+    const { data: novaMsg, error } = await supabase
+      .from('mensagens_ponto_bagunca')
+      .insert({
+        ponto_bagunca_id: id,
+        autor_id: user.id,
+        conteudo: texto.trim(),
+      })
+      .select()
+      .single();
+
+    if (!error && novaMsg) {
+      const msgCompleta: MensagemPontoBagunca = {
+        ...novaMsg,
+        autor: {
+          id: user.id,
+          nome: profile?.nome || 'Morador',
+          apelido: profile?.apelido || null,
+        },
+      };
+
+      setMensagensMap((prev) => ({
+        ...prev,
+        [id]: [...(prev[id] || []), msgCompleta],
+      }));
+    } else if (error) {
+      alert('Erro ao enviar mensagem: ' + error.message);
+    }
   };
 
   const renderContent = () => {
@@ -142,11 +290,16 @@ function MainApp() {
               </h2>
             </div>
 
-            {/* Carrossel de pontos de bagunça pendentes (mostra 4 fotos por vez com thread centralizada) */}
+            {/* Carrossel de pontos de bagunça com blur, 24h e thread */}
             <PontosBaguncaCarousel
-              pontosBagunca={pontosBagunca}
+              pontos={pontosBagunca}
+              currentUserId={user?.id}
+              visualizacoesIds={visualizacoesIds}
+              onAbrirPonto={handleAbrirPonto}
               onAssumirPonto={handleAssumirPonto}
               onEnviarMensagem={handleEnviarMensagem}
+              onNovaDenunciaClick={() => go('pontoBagunca')}
+              mensagensMap={mensagensMap}
             />
 
             <div className="space-y-2.5 mb-7">
@@ -172,7 +325,7 @@ function MainApp() {
               </button>
               <div className="grid grid-cols-2 gap-2.5">
                 <Button variant="outline" onClick={() => go('quadro')}>Foto do quadro</Button>
-                <Button variant="outline" onClick={() => go('pontoBagunca')}>Ponto de Bagunça</Button>
+                <Button variant="outline" onClick={() => go('pontoBagunca')}>+ Denunciar Ponto</Button>
               </div>
             </div>
 
@@ -211,7 +364,7 @@ function MainApp() {
             <Section>
               <Row title="Misturas" meta="Marcar almoço e janta" onClick={() => go('misturas')} right={chevron} />
               <Row title="Quadro de pontos" meta="Foto semanal do quadro" onClick={() => go('quadro')} right={chevron} />
-              <Row title="Ponto de Bagunça" meta="Registrar ponto individual com foto" onClick={() => go('pontoBagunca')} right={chevron} />
+              <Row title="Ponto de Bagunça" meta="Denunciar bagunça com foto (regra 24h)" onClick={() => go('pontoBagunca')} right={chevron} />
             </Section>
           </>
         );
@@ -257,19 +410,13 @@ function MainApp() {
 
       case 'pontoBagunca':
         return (
-          <>
-            <PageTitle title="Ponto de Bagunça" hint="Registre um ponto individual com foto" back={back} />
-            <PhotoForm submitLabel="Registrar Ponto de Bagunça" sentMessage="Ponto de Bagunça registrado.">
-              <label className="block">
-                <span className="text-xs font-medium text-muted">O que aconteceu?</span>
-                <textarea
-                  rows={3}
-                  placeholder="Ex.: copo deixado na mesa da varanda"
-                  className="mt-1.5 w-full rounded-lg border border-line bg-surface px-3 py-2.5 text-[15px] text-ink placeholder:text-muted/60 focus:outline-none focus:border-forest"
-                />
-              </label>
-            </PhotoForm>
-          </>
+          <DenunciaPontoScreen
+            onBack={goBack}
+            onSuccess={() => {
+              carregarPontosBagunca();
+              goBack();
+            }}
+          />
         );
 
       case 'funcas':

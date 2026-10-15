@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS public.pontos_bagunca (
     assumida_em TIMESTAMPTZ
 );
 
+-- 9.1 VISUALIZAÇÕES DO PONTO DE BAGUNÇA (Controle de Blur e Regra de 24h)
+CREATE TABLE IF NOT EXISTS public.pontos_bagunca_visualizacoes (
+    ponto_id UUID NOT NULL REFERENCES public.pontos_bagunca(id) ON DELETE CASCADE,
+    morador_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    visualizado_em TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (ponto_id, morador_id)
+);
+
 -- 10. MENSAGENS DE DISCUSSÃO DO PONTO DE BAGUNÇA (Thread Interna)
 CREATE TABLE IF NOT EXISTS public.mensagens_ponto_bagunca (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -635,7 +643,80 @@ WITH CHECK (
   )
 );
 
--- Habilita Realtime para pontos_bagunca e mensagens_ponto_bagunca
+-- VISUALIZAÇÕES DO PONTO DE BAGUNÇA (Controle de Blur e 24h)
+ALTER TABLE public.pontos_bagunca_visualizacoes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Todos podem ler visualizacoes de pontos" ON public.pontos_bagunca_visualizacoes;
+CREATE POLICY "Todos podem ler visualizacoes de pontos"
+ON public.pontos_bagunca_visualizacoes FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Morador ativo registra sua visualizacao" ON public.pontos_bagunca_visualizacoes;
+CREATE POLICY "Morador ativo registra sua visualizacao"
+ON public.pontos_bagunca_visualizacoes FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND morador_id = auth.uid()
+  )
+);
+
+-- ==============================================================================
+-- FUNÇÃO: VERIFICAÇÃO AUTOMÁTICA DE 24 HORAS E APLICAÇÃO DE PENALIDADES
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.verificar_penalidades_pontos_24h()
+RETURNS INT AS $$
+DECLARE
+    v_penalizados INT := 0;
+    r_ponto RECORD;
+    r_morador RECORD;
+BEGIN
+    FOR r_ponto IN
+        SELECT id, local_descricao, created_at
+        FROM public.pontos_bagunca
+        WHERE status = 'aberta'
+          AND created_at <= NOW() - INTERVAL '24 hours'
+    LOOP
+        -- Identifica moradores ativos da casa que não visualizaram o ponto após 24h
+        FOR r_morador IN
+            SELECT p.id
+            FROM public.profiles p
+            WHERE p.ativo = TRUE 
+              AND p.role IN ('morador', 'admin')
+              AND p.id NOT IN (
+                  SELECT morador_id FROM public.pontos_bagunca_visualizacoes WHERE ponto_id = r_ponto.id
+              )
+              -- Evita duplicidade de penalidade pelo mesmo ponto expirado
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.pontos_bagunca pb_sub
+                  WHERE pb_sub.culpado_id = p.id
+                    AND pb_sub.local_descricao = 'Penalidade: Não visualizou ponto em 24h (' || r_ponto.id::text || ')'
+              )
+        LOOP
+            INSERT INTO public.pontos_bagunca (
+                relator_id,
+                culpado_id,
+                foto_url,
+                local_descricao,
+                status,
+                assumida_em
+            ) VALUES (
+                r_morador.id,
+                r_morador.id,
+                '', -- Ponto gerado administrativamente pelo sistema
+                'Penalidade: Não visualizou ponto em 24h (' || r_ponto.id::text || ')',
+                'assumida',
+                NOW()
+            );
+            v_penalizados := v_penalizados + 1;
+        END LOOP;
+    END LOOP;
+    RETURN v_penalizados;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Habilita Realtime para pontos_bagunca, mensagens_ponto_bagunca e visualizacoes
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -650,6 +731,13 @@ BEGIN
     WHERE pubname = 'supabase_realtime' AND tablename = 'mensagens_ponto_bagunca'
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.mensagens_ponto_bagunca;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'pontos_bagunca_visualizacoes'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.pontos_bagunca_visualizacoes;
   END IF;
 END $$;
 

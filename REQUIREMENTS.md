@@ -163,12 +163,23 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - Os moradores pagam um valor mensal único e fixo estipulado pela república.
 - A Frente Financeiro é responsável por auditar os pagamentos e registrar a quitação.
 
-### RN04 - Abertura de Ponto de Bagunça, Discussão e Assunção de Culpa
-- Qualquer morador pode abrir um Ponto de Bagunça anexando obrigatoriamente uma foto.
-- Cada Ponto de Bagunça possui uma thread de mensagens em tempo real para identificação do autor.
-- A imputação do ponto individual ocorre quando o próprio morador responsável clica em "Assumir Ponto" dentro do Ponto de Bagunça.
-- Ao acumular 7 pontos no mês civil, o sistema gera automaticamente 1 pendência de caixa de cerveja individual no nome do morador.
-- A contagem de pontos individuais é zerada no primeiro dia de cada mês civil.
+### RN04 - Abertura de Ponto de Bagunça, Regra de 24h com Blur, Discussão e Assunção de Culpa
+- **Abertura com Foto Obrigatória:** Qualquer morador ativo pode abrir um Ponto de Bagunça anexando obrigatoriamente uma foto (comprimida no cliente para no máximo 1024px e qualidade 0.75) e indicando o que e onde está o item fora do lugar.
+- **Mecânica de Blur e Visualização Individual:**
+  - O ponto de bagunça nasce no carrossel da Home com **filtro de desfoque (`blur`)** para todos os moradores da casa, exceto para o próprio relator (autor da denúncia).
+  - Cada morador deve tocar no card para abrir e ver a foto pela primeira vez. Ao clicar, o blur é removido permanentemente para aquele morador e a leitura é registrada na tabela `pontos_bagunca_visualizacoes`.
+- **Prazo Limite de 24 Horas e Penalidade Automática:**
+  - Cada ponto possui um cronômetro regressivo com prazo de **24 horas** a contar do momento da publicação (`created_at`).
+  - Todo morador ativo da casa que **não abrir a imagem dentro das primeiras 24 horas** recebe automaticamente **1 ponto de bagunça administrativo**. A verificação é executada via função do banco `public.verificar_penalidades_pontos_24h()`.
+  - **Resolução Antecipada:** Se o culpado assumir a infração antes de expirar as 24h (`status = 'assumida'`), o ponto é imediatamente encerrado e nenhum outro morador é penalizado por falta de visualização.
+- **Discussão em Tempo Real:** Cada Ponto de Bagunça possui uma thread de mensagens em tempo real (`mensagens_ponto_bagunca`), com identificação estrita pelo **apelido** dos moradores (nunca o nome civil).
+- **Assunção do Ponto e Cervejas:**
+  - O próprio morador responsável clica em "Assumir Ponto", imputando a infração a si mesmo.
+  - Ao acumular 7 pontos no mês civil, o sistema gera automaticamente 1 pendência de caixa de cerveja individual no nome do morador.
+  - A contagem de pontos individuais é zerada no primeiro dia de cada mês civil.
+- **Políticas RLS em `pontos_bagunca_visualizacoes`:**
+  - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`).
+  - `INSERT`: Permitido para moradores ativos (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
 
 ### RN05 - Times de Limpeza por Quartos e Upload de Fotos
 - A escala semanal de faxina associa áreas comuns a quartos (times).
