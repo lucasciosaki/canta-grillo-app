@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@import "@fontsource-variable/dm-sans";
+
+/*
+  Paleta (regra 60-30-10):
+  - 60% neutros quentes (paper / surface), levemente esverdeados
+  - 30% tinta verde-escura (ink / muted) para texto
+  - 10% acento: forest (ação) + brand/leaf/mint (família verde da bandeira)
+  - Complementar: clay (terracota), oposto do verde no círculo cromático,
+    usado só para pendências e alertas.
+*/
+@theme {
+  --font-sans: "DM Sans Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-paper: #f6f5ef;
+  --color-surface: #fffefa;
+  --color-line: #e4e2d6;
+
+  --color-ink: #16241b;
+  --color-muted: #66726a;
+
+  --color-forest: #0a6b24;
+  --color-forest-dark: #07561c;
+  --color-brand: #00ab00;
+  --color-leaf: #68c100;
+  --color-mint: #e7f2cc;
+
+  --color-clay: #b4532f;
+  --color-clay-tint: #f6e5dc;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
