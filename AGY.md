@@ -434,6 +434,16 @@ classDiagram
      - `INSERT`: Permitido para morador ativo (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
    * **Penalidade Automática das 24 Horas:** A função do banco `public.verificar_penalidades_pontos_24h()` aplica 1 ponto de bagunça para qualquer morador ativo que não abrir a imagem após 24h da abertura. Se o culpado assumir a infração antes das 24h (`status = 'assumida'`), a penalidade de não-leitura é desativada para todos.
    * **Realtime:** Integrada à publicação `supabase_realtime` para sincronização instantânea de novas denúncias, visualizações e mensagens de apuração.
+11. **Quadro de Pontos, Rodízio Linear e Fiscalização do Halls (`ESCALA_SEMANAL_FAXINA` & `REGISTRO_DIARIO_FAXINA`):**
+   * **6 Funções e 6 Quartos:** As 6 funções fixas (Sala de TV, Sala de Estudos, Externo, Dispensa, Cozinha, Halls) rotacionam linearmente a cada Domingo às 01:00 BRT entre os 6 quartos da república ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
+   * **Backend Dedicado e Agendamentos:** Servidor Node.js integrado (`server/src/server.ts`) executando rotinas cron:
+     - `01:00 BRT`: Corte diário. Quarto sem foto comprovada toma +1 falta na escala da semana (`status = 'faltou'`). Aos domingos, dispara a virada de semana.
+     - `11:00 BRT`: Auditoria do fiscal. Se o quarto do Halls deixar tarefas de ontem sem parecer, marca `fiscal_status = 'omitido'` e o Halls toma no máximo 1 falta por omissão no dia (desde que não tenha tomado falta às 01:00 por falta de foto do hall).
+   * **Políticas RLS em `areas_comuns`, `ESCALA_SEMANAL_FAXINA` e `REGISTRO_DIARIO_FAXINA`:**
+     - **`areas_comuns`**: `SELECT` público para autenticados; `ALL` permitido para administradores e moradores ativos para garantir semeadura das 6 funções.
+     - **`escala_semanal_faxina`**: `SELECT` público para autenticados; `ALL` permitido para administradores e moradores ativos para inicialização manual e rodízio resiliente.
+     - **`registro_diario_faxina`**: `SELECT` público para autenticados; `ALL` para envio de comprovação e fiscalização do Halls.
+   * **Realtime:** Transmitida via publicação `supabase_realtime` para atualização instantânea em todos os dispositivos da casa.
 
 ---
 
@@ -542,7 +552,7 @@ flowchart LR
   *(A apuração financeira e cobrança foi alocada para a Fase 4, na página dedicada da Frente Financeiro).*
 
 ### Fase 2: Gestão de Limpeza, Pontos Individuais & Quartos
-- [ ] **Módulo de Pontos Individuais (Pontos de Bagunça):**
+- [x] **Módulo de Pontos Individuais (Pontos de Bagunça):**
   - Abertura de ponto de bagunça com foto obrigatória (compressão client-side).
   - Thread de bate-papo em tempo real integrada ao ponto de bagunça.
   - Ação do culpado "Assumir Ponto" com atribuição do ponto no perfil.

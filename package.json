@@ -10,13 +10,21 @@
     "preview": "vite preview",
     "test": "node --test tests/unit/**/*.test.mjs",
     "test:security": "node --test tests/security/**/*.test.mjs",
-    "test:all": "node --test tests/**/*.test.mjs"
+    "test:all": "node --test tests/**/*.test.mjs",
+    "server": "node --experimental-strip-types server/src/server.ts"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",
     "@supabase/supabase-js": "^2.117.3",
     "@tanstack/react-query": "^5.104.2",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node-cron": "^3.0.11",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
     "lucide-react": "^1.57.0",
+    "node-cron": "^4.6.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.4",

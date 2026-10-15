@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
-import { PhotoForm } from './components/PhotoForm';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
 import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
@@ -11,6 +10,7 @@ import { AprovacoesScreen } from './features/admin/AprovacoesScreen';
 import { FrentesScreen } from './features/frentes/FrentesScreen';
 import { MisturasScreen } from './features/refeicoes/MisturasScreen';
 import { DenunciaPontoScreen } from './features/pontos/DenunciaPontoScreen';
+import { QuadroPontosScreen } from './features/faxina/QuadroPontosScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
@@ -401,12 +401,7 @@ function MainApp() {
         return <MisturasScreen onBack={goBack} />;
 
       case 'quadro':
-        return (
-          <>
-            <PageTitle title="Quadro de pontos" hint="Fotografe o quadro da semana" back={back} />
-            <PhotoForm submitLabel="Enviar foto do quadro" sentMessage="Foto do quadro registrada." />
-          </>
-        );
+        return <QuadroPontosScreen onBack={goBack} />;
 
       case 'pontoBagunca':
         return (

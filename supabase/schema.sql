@@ -80,10 +80,11 @@ CREATE TABLE IF NOT EXISTS public.escala_semanal_faxina (
     semana_ano INT NOT NULL CHECK (semana_ano BETWEEN 1 AND 53),
     ano INT NOT NULL CHECK (ano >= 2024),
     penalidade_atribuida TEXT,
+    pontos_faltas INT NOT NULL DEFAULT 0,
     PRIMARY KEY (quarto_id, area_comum_id, semana_ano, ano)
 );
 
--- 8. REGISTROS DIÁRIOS DE FAXINA (Comprovação por Fotos)
+-- 8. REGISTROS DIÁRIOS DE FAXINA (Comprovação por Fotos e Fiscalização do Halls)
 CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     quarto_id UUID NOT NULL,
@@ -95,6 +96,14 @@ CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
     fotos_comprovacao TEXT[] NOT NULL DEFAULT '{}',
     registrado_por UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     enviado_em TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Avaliação do Fiscal (Halls)
+    fiscal_status TEXT NOT NULL DEFAULT 'pendente' CHECK (fiscal_status IN ('pendente', 'aprovado', 'reprovado', 'omitido')),
+    fiscal_foto_url TEXT,
+    fiscal_observacao TEXT,
+    fiscalizado_em TIMESTAMPTZ,
+    fiscalizado_por UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    
     FOREIGN KEY (quarto_id, area_comum_id, semana_ano, ano) 
         REFERENCES public.escala_semanal_faxina(quarto_id, area_comum_id, semana_ano, ano) ON DELETE CASCADE,
     CONSTRAINT unique_escala_dia UNIQUE (quarto_id, area_comum_id, semana_ano, ano, data)
@@ -299,6 +308,19 @@ VALUES
     ('Quádruplo', 4),
     ('Triplo', 3),
     ('Varanda', 3)
+ON CONFLICT (nome) DO NOTHING;
+
+-- ==============================================================================
+-- POPULAÇÃO DAS 6 ÁREAS / FUNÇÕES DE FAXINA DA REPÚBLICA
+-- ==============================================================================
+INSERT INTO public.areas_comuns (nome, descricao)
+VALUES 
+    ('Sala de TV', 'Organização diária e recolhimento de itens na Sala de TV'),
+    ('Sala de Estudos', 'Limpeza de mesas, cadeiras e organização do espaço de estudos'),
+    ('Externo', 'Limpeza e recolhimento de materiais na área externa'),
+    ('Dispensa', 'Organização das prateleiras e mantimentos na dispensa'),
+    ('Cozinha', 'Organização de pias, bancadas e recolhimento de louças'),
+    ('Halls', 'Limpeza dos corredores e fiscalização diária das outras 5 funções da casa')
 ON CONFLICT (nome) DO NOTHING;
 
 -- ==============================================================================
@@ -739,6 +761,71 @@ BEGIN
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.pontos_bagunca_visualizacoes;
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'escala_semanal_faxina'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.escala_semanal_faxina;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'registro_diario_faxina'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.registro_diario_faxina;
+  END IF;
 END $$;
+
+-- ==============================================================================
+-- 6. POLÍTICAS RLS: ÁREAS COMUNS, ESCALA SEMANAL E REGISTRO DIÁRIO DE FAXINA
+-- ==============================================================================
+ALTER TABLE public.areas_comuns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.escala_semanal_faxina ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.registro_diario_faxina ENABLE ROW LEVEL SECURITY;
+
+-- AREAS COMUNS: Leitura livre (anon e authenticated, idêntico à tabela rooms)
+DROP POLICY IF EXISTS "Leitura de areas comuns" ON public.areas_comuns;
+CREATE POLICY "Leitura de areas comuns"
+ON public.areas_comuns FOR SELECT
+TO anon, authenticated
+USING (true);
+
+DROP POLICY IF EXISTS "Admin ou morador gerencia areas comuns" ON public.areas_comuns;
+CREATE POLICY "Admin ou morador gerencia areas comuns"
+ON public.areas_comuns FOR ALL
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+-- ESCALA SEMANAL: Leitura livre (anon e authenticated)
+DROP POLICY IF EXISTS "Todos podem ler escala semanal" ON public.escala_semanal_faxina;
+CREATE POLICY "Todos podem ler escala semanal"
+ON public.escala_semanal_faxina FOR SELECT
+TO anon, authenticated
+USING (true);
+
+-- ESCALA SEMANAL: Escrita permitida para Admin ou processos de backend
+DROP POLICY IF EXISTS "Admin ou backend gerencia escala semanal" ON public.escala_semanal_faxina;
+CREATE POLICY "Admin ou backend gerencia escala semanal"
+ON public.escala_semanal_faxina FOR ALL
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+-- REGISTRO DIÁRIO: Leitura livre (anon e authenticated)
+DROP POLICY IF EXISTS "Todos podem ler registros diarios de faxina" ON public.registro_diario_faxina;
+CREATE POLICY "Todos podem ler registros diarios de faxina"
+ON public.registro_diario_faxina FOR SELECT
+TO anon, authenticated
+USING (true);
+
+-- REGISTRO DIÁRIO: Morador ativo pode inserir ou atualizar foto e check
+DROP POLICY IF EXISTS "Moradores ativos e admin registram faxina diaria" ON public.registro_diario_faxina;
+CREATE POLICY "Moradores ativos e admin registram faxina diaria"
+ON public.registro_diario_faxina FOR ALL
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
 
 

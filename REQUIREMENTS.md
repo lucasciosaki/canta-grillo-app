@@ -181,14 +181,28 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`).
   - `INSERT`: Permitido para moradores ativos (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
 
-### RN05 - Times de Limpeza por Quartos e Upload de Fotos
-- A escala semanal de faxina associa áreas comuns a quartos (times).
-- A validação da limpeza diária exige envio de foto(s) pelo app.
-- Após o envio das fotos, o sistema registra a realização da tarefa no Quadro de Pontos digital.
+### RN05 - Times de Limpeza por Quartos, Rodízio Linear e Fiscalização do Halls
+- **6 Funções e 6 Quartos da Casa:**
+  - As 6 áreas fixas de arrumação diária são: **Sala de TV**, **Sala de Estudos**, **Externo**, **Dispensa**, **Cozinha** e **Halls**.
+  - Os 6 quartos da casa (Carandiru, High School, Principal, Quádruplo, Triplo e Varanda) cumprem um rodízio semanal linear e circular: a cada virada de semana (Domingo às 01:00 BRT), cada quarto avança automaticamente 1 posição na sequência de funções ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
+- **Corte Diário às 01:00 BRT (Backend Node.js):**
+  - A rotina agendada do backend roda diariamente às 01:00 BRT (`America/Sao_Paulo`).
+  - Todo quarto que não tiver enviado a foto comprovando a limpeza da sua área até as 01:00 recebe automaticamente **1 falta (+1 ponto no Quadro de Pontos da semana)**, e o status é marcado como `faltou`.
+- **Papel Duplo do Fiscal (Halls):**
+  - O quarto escalado no **Halls** deve fotografar o Hall limpo normalmente (sua tarefa diária).
+  - Além disso, atua como **Fiscal** das outras 5 funções da casa. Pelo Painel do Fiscal, pode dar check de **Aprovação** ou registrar **Reprovação** (com justificativa obrigatória e foto opcional de contraprova).
+  - **Reprovação Expressa:** Se o fiscal reprovar o serviço, o quarto avaliado toma imediatamente 1 falta na escala da semana.
+  - **Auditoria das 11:00 BRT & Omissão:** O fiscal tem até as 11:00 da manhã seguinte para avaliar todas as funções concluídas. Se o fiscal deixar funções sem parecer, a rotina marca `omitido` e o quarto do **Halls toma no máximo 1 falta por omissão no dia**. Além disso, se o quarto do Halls **já tiver tomado falta às 01:00 por não ter tirado a foto do próprio Hall, ele não toma uma segunda falta por omissão de fiscalização no mesmo dia**.
 
-### RN06 - Penalidades de Quarto Configuráveis
-- Se um quarto acumular 2 ou mais faltas/pontos na mesma semana, o sistema aciona uma penalidade coletiva para os integrantes daquele quarto.
-- A regra/descrição da penalidade deve ser editável a qualquer momento por um Administrador da república.
+### RN06 - Penalidades de Quarto por Faltas Semanais (≥ 2 Faltas) e Políticas RLS da Faxina
+- Se um quarto acumular **2 ou mais faltas/pontos na mesma semana**, o sistema aciona a penalidade coletiva para os integrantes daquele quarto.
+- O texto e a descrição da penalidade semanal (ex.: *"Pagar 1 caixa de cerveja para a casa"*) são configuráveis a qualquer momento pelo Administrador da república via painel.
+- O Quadro de Pontos digital destaca em vermelho e com alerta visual pulsante os quartos que atingiram a marca de 2 ou mais faltas na semana vigente.
+- **Governança e Políticas RLS (Database-First):**
+  - **`areas_comuns`**: Leitura permitida para todos os autenticados (`SELECT`). Inserção e atualização permitidas para Administradores e moradores ativos (`public.is_admin() OR public.is_active_morador()`) para garantir semeadura das 6 funções.
+  - **`escala_semanal_faxina`**: Leitura pública para autenticados (`SELECT`). Gestão e inicialização permitidas para Administradores e moradores ativos (`ALL`), garantindo flexibilidade e redundância mesmo se o serviço backend estiver em reinicialização.
+  - **`registro_diario_faxina`**: Leitura aberta para autenticados (`SELECT`). Inserção de foto e avaliação de fiscalização permitidas para Administradores e moradores ativos (`ALL`).
+  - **Identificação Estrita por Apelido:** Todas as referências visuais aos moradores e administradores na interface e no histórico de avaliações exibem estritamente o **apelido** cadastrado.
 
 ### RN07 - Registro Estritamente Unitário e Liquidação de Caixas de Cerveja
 - Cada lançamento de caixa de cerveja no sistema representa exatamente 1 unidade individual, acompanhado de data de atribuição, morador e descrição do motivo.
