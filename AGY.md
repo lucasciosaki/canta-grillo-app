@@ -464,6 +464,18 @@ classDiagram
       - `DELETE`: Exclusivo do Administrador (`public.is_admin()`).
     * **Realtime:** Transmitida via publicação `supabase_realtime` para sincronização instantânea em todos os dispositivos da casa.
 
+13. **Governança e Políticas RLS das Frentes, Chats, Funças, Dogs e Mercado (Fase 4):**
+    * **`FRONTS`:** Leitura liberada para moradores ativos e administradores (`public.is_admin() OR public.is_active_morador()`). Modificações e criação exclusivas de administradores.
+    * **`MENSAGENS_FRENTE` (Chat Interno das Frentes - RN11):** Isolamento database-first rigoroso: leitura e inserção restritas aos integrantes da respectiva frente (`public.is_front_member(frente_id)`) ou administradores (`public.is_admin()`). Mensagens enviadas devem ter `autor_id = auth.uid()`. Exclusão permitida para o próprio autor ou administrador.
+    * **`FUNCAS` & `FUNCA_ATRIBUICOES` (Sistema de Tarefas das Frentes - RN09):**
+      - `funcas`: Leitura para moradores ativos e admin. Inserção permitida para qualquer morador ativo (`relator_id = auth.uid()`). Atualização permitida para integrantes da frente, relator ou moradores atribuídos. Exclusão para líder da frente, relator ou administrador.
+      - `funca_atribuicoes`: Autoatribuição liberada para membros da frente ou admin. Atribuição de tarefas a outros moradores permitida ao Líder da frente (`is_front_lider`) para membros da mesma frente ou a administradores (`public.is_admin()`).
+    * **`DOGS_REFEICOES_DIARIAS` (Controle Alimentar dos Cães - RN10):** Leitura aberta a todos os moradores ativos e admin. Inserção e atualização permitidas no dia vigente (`data = CURRENT_DATE`) para qualquer morador ativo registrando a si mesmo como cuidador (`alimentado_por = auth.uid()`). Exclusão no dia vigente permitida ao autor, membros da Frente Dogs ou administrador.
+    * **`MARKET_CATALOG` & `SOLICITACOES_MERCADO` (Suprimentos e Compras Coletivas - RN08):**
+      - `market_catalog`: Leitura liberada para todos os moradores ativos (para viabilizar pedidos de reposição). Inserção, edição e exclusão de itens do catálogo oficial exclusivas de integrantes da Frente Mercado (`public.is_front_member_by_slug('mercado')`) ou administradores.
+      - `solicitacoes_mercado`: Qualquer morador ativo pode solicitar produtos do catálogo mestre (`status = 'solicitado'`). Atualização do status de compra (`status = 'comprado'`) exclusiva de integrantes da Frente Mercado ou administradores.
+    * **Realtime:** Publicação `supabase_realtime` habilitada para `mensagens_frente`, `funcas`, `funca_atribuicoes`, `dogs_refeicoes_diarias`, `market_catalog` e `solicitacoes_mercado`.
+
 ---
 
 ### 3.5 Diretriz de Engenharia: Chaves Naturais vs. Chaves Artificiais (Surrogates)
@@ -591,26 +603,23 @@ flowchart LR
   - Mural de histórico transparente das caixas.
 
 ### Fase 4: Sistema Geral de "Funças", Páginas das Frentes Organizacionais & Chats
-- [ ] **Sistema Geral de Funças:**
-  - Abertura de Funça geral ou por frente (com título, descrição e foto opcional).
+- [x] **Sistema Geral de Funças no Painel da Frente:**
+  - Abertura de Funça vinculada à frente (com título, descrição e prazo opcional).
   - Lógica de atribuição:
-    - Funça de Frente: Líder atribui a membros ou membros se autoatribuem.
-    - Funça Geral: Veterano atribui a seu bixo, Admin atribui a qualquer morador, ou autoatribuição.
-  - Painel Centralizado da Reunião Semanal para triagem coletiva de funças pendentes.
-- [ ] **Páginas e Módulos Específicos das Frentes Organizacionais:**
+    - Funça de Frente: Líder atribui a membros da frente ou membros se autoatribuem; Admin atribui a qualquer morador.
+  - Listagem de todas as funças pendentes (`aberta` e `em_andamento`) na aba dedicada do Painel da Frente.
+- [x] **Páginas e Módulos Específicos das Frentes Organizacionais:**
   - **Frente Mercado:**
-    - Painel de gerenciamento do Catálogo Mestre (exclusivo para membros da frente).
-    - Interface dos moradores para solicitação de itens faltantes a partir do catálogo mestre.
-    - Lista de compras ativa com checklist para o dia de ida ao supermercado.
+    - Painel de gerenciamento do Catálogo Mestre (exclusivo para membros da frente e Admin).
+    - Interface dos moradores para solicitação de itens faltantes a partir do catálogo mestre (com modal de atalho rápido na tela principal).
+    - Lista de compras ativa com checklist agrupado por item para o dia de ida ao supermercado.
   - **Frente Financeiro ("Caixinha"):**
-    - **Dashboard Mensal de Cobrança de Convidados:** Puxa os registros de `daily_meals` de todos os convidados (`role = 'externo'`) no mês, calcula o montante devido e disponibiliza envio de fatura/PIX pelo WhatsApp.
-    - Painel de controle de mensalidade fixa dos moradores.
+    - **Dashboard Mensal de Cobrança de Convidados:** Puxa os registros de `daily_meals` de todos os convidados (`role = 'externo'`) no mês, calcula o montante consumido e disponibiliza envio de prestação de contas pelo WhatsApp.
   - **Frente Dogs:**
-    - Checklist das 2 refeições diárias (Manhã e Noite) com morador e horário.
-    - Registro de medicamentos e alertas de vermífugos/antipulgas.
-  - **Demais Frentes (Piscina, Jardim, Manutenção, PP, Valéria, Hanna, Varanda):** Módulos dedicados para rotinas e chamados.
-- [ ] **Canais de Comunicação (Chats):**
-  - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes.
+    - Checklist diário das 2 refeições dos cães (Manhã e Noite) com morador, horário e observações (com modal de atalho rápido na tela principal).
+  - **Demais Frentes (Piscina, Jardim, Manutenção, PP, Valéria, Hanna, Varanda):** Páginas dedicadas completas com Painel de Funças, Chat em tempo real e listagem de Membros.
+- [x] **Canais de Comunicação (Chats):**
+  - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes, protegidos por RLS database-first restrito aos membros de cada comissão e Administradores.
 
 ### Fase 5: Notificações Web Push, Otimizações PWA & Deploy
 - [ ] Configuração do Service Worker para envio e recepção de Web Push Notifications.

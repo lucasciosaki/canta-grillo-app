@@ -241,27 +241,33 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - `DELETE`: Exclusivo para Administradores (estorno de lançamentos equivocados).
   - `Realtime`: Integrada à publicação `supabase_realtime`.
 
-### RN08 - Catálogo de Mercado e Sugestão de Itens
-- Somente integrantes da Frente Mercado podem gerenciar o catálogo mestre de produtos.
-- Moradores gerais podem solicitar compras apenas a partir de itens cadastrados nesse catálogo mestre.
+### RN08 - Catálogo de Mercado, Sugestão de Itens e Governança RLS
+- **Gestão do Catálogo:** Somente integrantes da Frente Mercado (`public.is_front_member_by_slug('mercado')`) e Administradores possuem permissão de escrita (`INSERT`, `UPDATE`, `DELETE`) na tabela `public.market_catalog`.
+- **Solicitações de Compra:** Qualquer morador ativo (`public.is_active_morador()`) pode visualizar o catálogo mestre e cadastrar solicitações de reposição (`INSERT` em `public.solicitacoes_mercado` com `status = 'solicitado'`).
+- **Checklist de Compras do Mês:** Na ida ao supermercado, apenas integrantes da Frente Mercado e Administradores podem atualizar o status da compra (`UPDATE public.solicitacoes_mercado SET status = 'comprado'`).
+- **Atalho Rápido:** Disponibilizado modal de solicitação rápida acessível a qualquer morador ativo a partir do topo da tela de Frentes.
 
-### RN09 - Abertura e Regras de Atribuição de Funças (Incluindo Reunião Semanal)
-- Qualquer morador tem permissão para cadastrar uma nova Funça (com ou sem foto ilustrativa), definindo-a como Geral ou direcionada a uma Frente.
-- Na reunião semanal, o coordenador/Admin ou a casa coletivamente pode cadastrar e alocar Funças pendentes aos moradores.
-- **Funça de Frente:**
-  - O Líder da Frente pode atribuir a tarefa a qualquer integrante da frente.
-  - Qualquer integrante da frente pode se autoatribuir para executá-la.
-- **Funça Geral:**
-  - Um morador de geração veterana pode atribuir a Funça a qualquer morador de geração caloura ("seu bixo"), validado pela hierarquia de gerações (`autor.geracao < alvo.geracao`).
-  - O Administrador pode atribuir a Funça a qualquer morador da casa.
-  - Qualquer morador pode se autoatribuir.
+### RN09 - Abertura e Regras de Atribuição de Funças (Incluindo Painel da Frente)
+- Qualquer morador ativo tem permissão para cadastrar uma nova Funça (`INSERT` em `public.funcas`), definindo-a como Geral ou direcionada a uma Frente.
+- **Painel da Frente:** Na página dedicada de cada frente, a aba "Painel da Frente" lista todas as Funças pendentes (`aberta` e `em_andamento`) vinculadas àquela frente específica, permitindo acompanhar prazos, responsáveis e criar novas tarefas setoriais.
+- **Regras de Atribuição de Funças de Frente (`public.funca_atribuicoes`):**
+  - O Líder da Frente (`is_lider = true`) pode atribuir a tarefa a qualquer integrante da mesma frente (`tipo_atribuicao = 'lider_frente'`).
+  - Qualquer integrante daquela frente pode se **autoatribuir** para executá-la (`tipo_atribuicao = 'autoatribuicao'`).
+  - O Administrador pode atribuir a tarefa a qualquer morador da casa (`tipo_atribuicao = 'admin_geral'`).
+- **Transição de Status:** Integrantes da frente e moradores atribuídos podem iniciar (`em_andamento`) e concluir (`concluida`) as funças.
 
-### RN10 - Controle das Refeições dos Dogs
-- O registro das duas refeições diárias dos cães deve indicar o morador responsável e o horário de realização.
-- O status zera diariamente à meia-noite para garantir o acompanhamento no dia seguinte.
+### RN10 - Controle das Refeições dos Dogs (Manhã e Noite) e Políticas RLS
+- O registro das duas refeições diárias dos cães (`manha` e `noite`) na tabela `public.dogs_refeicoes_diarias` indica o morador responsável (sempre exibido por **apelido**), horário de realização e observações adicionais.
+- **Políticas RLS:** Qualquer morador ativo ou administrador pode registrar a refeição no dia corrente (`data = CURRENT_DATE` e `alimentado_por = auth.uid()`). A exclusão/desmarcação no dia é restrita ao autor da marcação, membros da Frente Dogs ou administrador.
+- **Atalho Rápido:** Além da aba exclusiva na página da Frente Dogs, a tela inicial de Frentes disponibiliza atalho rápido "Alimentar Dogs" para que qualquer morador da casa possa cumprir e assinar o checklist na hora.
 
-### RN11 - Canais de Comunicação por Frente (Chats)
-- Cada uma das 10 frentes organizacionais possui um canal de mensagens integrado, visível aos seus respectivos integrantes e administradores para alinhamentos contínuos de rotina.
+### RN11 - Canais de Comunicação por Frente (Chats em Tempo Real) e Políticas RLS
+- Cada uma das 10 frentes organizacionais possui um canal de mensagens privativo (`public.mensagens_frente`), sincronizado instantaneamente via Supabase Realtime (`supabase_realtime`).
+- **Isolamento de Segurança (RLS Database-First):**
+  - `SELECT`: Liberado exclusivamente para integrantes daquela frente (`public.is_front_member(frente_id)`) e Administradores da república (`public.is_admin()`). Moradores não-membros têm leitura estritamente bloqueada.
+  - `INSERT`: Liberado para integrantes da frente e administradores, exigindo estritamente `autor_id = auth.uid()`.
+  - `DELETE`: Permitido ao autor da mensagem ou administrador.
+- **Identificação Estrita por Apelido:** Todas as mensagens exibem o **apelido** do autor e destacam badge de Líder (`⭐`) caso o autor possua `is_lider = true` naquela frente.
 
 ### RN12 - Ata da Última Reunião e Link do Drive
 - Qualquer morador ativo da república pode publicar uma ata de reunião, informando a **data da reunião**, o **link** (URL `http`/`https` válida) e, opcionalmente, um título da reunião.
