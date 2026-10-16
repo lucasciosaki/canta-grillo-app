@@ -219,9 +219,27 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - **`registro_diario_faxina`**: Leitura aberta para autenticados (`SELECT`). Inserção de foto e avaliação de fiscalização permitidas para Administradores e moradores ativos (`ALL`).
   - **Identificação Estrita por Apelido:** Todas as referências visuais aos moradores e administradores na interface e no histórico de avaliações exibem estritamente o **apelido** cadastrado.
 
-### RN07 - Registro Estritamente Unitário e Liquidação de Caixas de Cerveja
-- Cada lançamento de caixa de cerveja no sistema representa exatamente 1 unidade individual, acompanhado de data de atribuição, morador e descrição do motivo.
-- A liquidação (baixa) só é efetivada no status `Paga` após validação de um Administrador (seja por baixa direta ou por aprovação de solicitação feita pelo morador).
+### RN07 - Registro Estritamente Unitário, Liquidação de Caixas de Cerveja e Políticas RLS
+- **Lançamento Estritamente Unitário:** Cada lançamento de caixa de cerveja no sistema representa exatamente 1 unidade individual (sem campos de quantidade fracionada ou múltipla).
+- **Origem das Caixas:**
+  - **Automática (`origem = 'pontos'`):** Gerada automaticamente via trigger ao acumular 7 pontos de bagunça assumidos no mês civil (ou múltiplos de 7).
+  - **Manual / Tradições (`origem = 'manual'`):** Lançada exclusivamente pelo Administrador por conquistas ou tradições da casa (estágio, namoro, prendas, etc.).
+- **Ciclo de Vida e Status:**
+  - `Pendente`: Caixa devida e em aberto.
+  - `Baixa Solicitada`: Morador entregou a caixa física e solicitou baixa no app (`solicitada_em = NOW()`).
+  - `Paga`: Liquidação confirmada pelo Admin (`baixada_em = NOW()`, `baixada_por = auth.uid()`), seja aprovando solicitação ou por baixa direta.
+  - **Recusa/Devolução:** O Admin pode recusar uma solicitação em análise, retornando o status para `Pendente` e limpando `solicitada_em`.
+- **Interface Centrada em Moradores:**
+  - A tela de Cervejas lista todos os moradores ativos da república em formato expansível (Accordion), mostrando quantas e quais caixas cada um deve.
+  - Moradores com mais pendências aparecem no topo; moradores zerados aparecem com `0 caixas`.
+  - Aba secundária de Histórico exibindo todas as caixas já pagas em ordem cronológica reversa com auditoria do Admin responsável pela baixa.
+- **Identificação Estrita por Apelido:** Todas as referências visuais na interface exibem estritamente o apelido cadastrado do morador.
+- **Governança e Políticas RLS (Database-First):**
+  - `SELECT`: Permitido para Administradores e Moradores ativos (`public.is_admin() OR public.is_active_morador()`).
+  - `INSERT`: Exclusivo para Administradores via client-side.
+  - `UPDATE`: Administrador gerencia qualquer status; Morador ativo pode apenas solicitar baixa da sua própria caixa pendente. Gatilho de segurança `trg_protect_caixas_cerveja_update` blinda colunas imutáveis.
+  - `DELETE`: Exclusivo para Administradores (estorno de lançamentos equivocados).
+  - `Realtime`: Integrada à publicação `supabase_realtime`.
 
 ### RN08 - Catálogo de Mercado e Sugestão de Itens
 - Somente integrantes da Frente Mercado podem gerenciar o catálogo mestre de produtos.

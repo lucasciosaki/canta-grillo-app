@@ -455,6 +455,17 @@ classDiagram
 
 ---
 
+12. **Gestão de Caixas de Cerveja (`CAIXAS_CERVEJA` - Supabase RLS):**
+    * **Registro Estritamente Unitário:** Cada tupla na tabela `caixas_cerveja` representa exatamente 1 caixa física devida.
+    * **Políticas RLS em `public.caixas_cerveja`:**
+      - `SELECT`: Permitido a todos os moradores ativos e administradores (`public.is_admin() OR public.is_active_morador()`). Convidados externos e anônimos têm acesso negado.
+      - `INSERT`: Exclusivo do Administrador (`public.is_admin()`) para lançamentos de tradições (`origem = 'manual'`). Lançamentos de 7 pontos de desorganização (`origem = 'pontos'`) ocorrem via trigger `trg_gerar_cerveja_por_pontos` (`SECURITY DEFINER`).
+      - `UPDATE`: Administrador pode aprovar baixa (`status = 'paga'`), dar baixa direta ou recusar/devolver solicitação (`status = 'pendente'`). Morador devedor ativo pode atualizar exclusivamente sua própria caixa (`morador_id = auth.uid()`) para solicitar baixa (`status = 'baixa_solicitada'`). Gatilho `trg_protect_caixas_cerveja_update` impede adulteração de colunas críticas pelo morador.
+      - `DELETE`: Exclusivo do Administrador (`public.is_admin()`).
+    * **Realtime:** Transmitida via publicação `supabase_realtime` para sincronização instantânea em todos os dispositivos da casa.
+
+---
+
 ### 3.5 Diretriz de Engenharia: Chaves Naturais vs. Chaves Artificiais (Surrogates)
 
 Para otimizar integridade e facilidade de manutenção no PostgreSQL do Supabase, adotamos uma estratégia híbrida criteriosa:
@@ -573,7 +584,7 @@ flowchart LR
   - Tabela de penalidades progressivas configuráveis de 2 a 7 pontos no Supabase (`public.regras_quadro_pontos`) e governança do Admin.
 
 ### Fase 3: Gestão de Caixas de Cerveja
-- [ ] **Gestão de Caixas de Cerveja:**
+- [x] **Gestão de Caixas de Cerveja:**
   - Registro estritamente unitário (1 caixa por registro).
   - Lançamento automático (vindos dos 7 pontos) e manual (tradições: estágio, namoro, etc.).
   - Fluxo de baixa: solicitação pelo morador com aprovação do Admin ou baixa direta pelo Admin.
