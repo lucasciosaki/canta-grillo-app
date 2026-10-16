@@ -227,16 +227,26 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - Somente integrantes da Frente Mercado podem gerenciar o catálogo mestre de produtos.
 - Moradores gerais podem solicitar compras apenas a partir de itens cadastrados nesse catálogo mestre.
 
-### RN09 - Abertura e Regras de Atribuição de Funças (Incluindo Reunião Semanal)
-- Qualquer morador tem permissão para cadastrar uma nova Funça (com ou sem foto ilustrativa), definindo-a como Geral ou direcionada a uma Frente.
-- Na reunião semanal, o coordenador/Admin ou a casa coletivamente pode cadastrar e alocar Funças pendentes aos moradores.
+### RN09 - Abertura, Governança e Regras de Atribuição de Funças (Incluindo Reunião Semanal)
+- **Abertura e Multi-responsáveis:** Qualquer morador ativo tem permissão para cadastrar uma nova Funça (com título, descrição, prazo opcional e foto ilustrativa opcional), definindo-a como Geral ou direcionada a uma Frente. Uma funça pode ter múltiplos responsáveis simultâneos (`(funca_id, morador_id)`).
+- **Ciclo Manual em 3 Etapas:** `aberta` -> `em_andamento` -> `concluida`. Atribuir responsáveis não muda o status automaticamente; a funça permanece aberta até que um responsável atribuído, líder da frente, relator ou Admin clique em "Iniciar (Em andamento)" e posteriormente em "Concluir Funça".
 - **Funça de Frente:**
-  - O Líder da Frente pode atribuir a tarefa a qualquer integrante da frente.
-  - Qualquer integrante da frente pode se autoatribuir para executá-la.
+  - O Líder da Frente pode atribuir a tarefa a qualquer integrante da frente (`tipo_atribuicao = 'lider_frente'`).
+  - Qualquer integrante da frente pode se autoatribuir para executá-la (`tipo_atribuicao = 'autoatribuicao'`).
+  - O Administrador pode atribuir a qualquer morador ativo (`tipo_atribuicao = 'admin_geral'`).
 - **Funça Geral:**
-  - Um morador de geração veterana pode atribuir a Funça a qualquer morador de geração caloura ("seu bixo"), validado pela hierarquia de gerações (`autor.geracao < alvo.geracao`).
-  - O Administrador pode atribuir a Funça a qualquer morador da casa.
-  - Qualquer morador pode se autoatribuir.
+  - Qualquer morador ativo veterano pode atribuir qualquer Funça Geral pendente a um morador calouro ("seu bixo"), validado pela hierarquia numérica de gerações (`geracao_num(autor) < geracao_num(alvo)`), com `tipo_atribuicao = 'veterano_bixo'`.
+  - O Administrador pode atribuir a Funça a qualquer morador da casa (`tipo_atribuicao = 'admin_geral'`).
+  - Qualquer morador ativo pode se autoatribuir (`tipo_atribuicao = 'autoatribuicao'`).
+- **Painel da Reunião Semanal:**
+  - Qualquer morador ativo operando a reunião semanal pode criar múltiplas funças rapidamente em lote (planilha/linhas dinâmicas) e alocar responsáveis diretamente com `tipo_atribuicao = 'reuniao'`.
+  - Triagem coletiva das funças pendentes com foco nas "Sem dono", permitindo definir prazos e responsáveis inline.
+- **Remoção de Responsável vs. Solicitação de Troca:**
+  - Remoção direta permitida exclusivamente a Administradores, Líderes da frente da funça ou ao Veterano do morador atribuído (inclusive em Funça de Frente).
+  - O responsável comum não pode se remover sozinho: ele pode solicitar troca para qualquer morador ativo da casa (`troca_solicitada_para`), que deve aceitar via RPC `public.aceitar_troca_funca` para que a responsabilidade seja transferida.
+- **Identificação e Segurança (Database-First RLS):**
+  - Exibição estrita pelo apelido em todos os componentes da interface.
+  - Políticas de RLS nas tabelas `public.funcas` e `public.funca_atribuicoes` e sincronização instantânea via Supabase Realtime.
 
 ### RN10 - Controle das Refeições dos Dogs
 - O registro das duas refeições diárias dos cães deve indicar o morador responsável e o horário de realização.
@@ -263,7 +273,7 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 
 ### RN14 - Governança das Frentes e Co-Lideranças (Database-First RLS)
 - **Visualização:** Qualquer morador autenticado pode consultar os integrantes e líderes de cada frente (`SELECT` em `front_members`).
-- **Alocação e Liderança:** Apenas Administradores (`role = 'admin'` e `ativo = true`) possuem permissão para vincular moradores a frentes (`INSERT`), alterar a flag de co-liderança `is_lider` (`UPDATE`), ou desvincular membros (`DELETE`), garantindo integridade auditável no banco de dados.
+- **Alocação e Liderança:** Apenas Administradores (`role = 'admin'` e `ativo = true`) possuem permissão para vincular moradores a frentes (`INSERT`), alterar a flag de co-liderança `is_lider` (`UPDATE`), ou desvincular membros (`DELETE`). A política de `INSERT` e os seletores de interface restringem estritamente os membros a moradores ativos da república (`role IN ('morador', 'admin') AND ativo = true`), impedindo que convidados externos (`role = 'externo'`) sejam vinculados a frentes organizacionais.
 
 ### RN15 - Folha de Misturas Digital e Políticas RLS (daily_meals)
 - **Visualização:** Todos os moradores autenticados (`authenticated`) podem consultar o quadro de refeições diárias da casa (`SELECT` em `daily_meals`). Usuários anônimos têm acesso negado.

@@ -5,18 +5,22 @@ import type { Front, FrontMember } from '../../types/frentes';
 import type { Profile } from '../../types/auth';
 import { PageTitle, Section, Row, Tag, Button } from '../../components/ui';
 import { Users, Star, UserPlus, Trash2, X } from 'lucide-react';
+import { obterApelidoMorador } from '../../types/funcas';
 
 interface FrentesScreenProps {
   onBack: () => void;
+  onOpenFuncasDaFrente?: (frontId: string) => void;
 }
 
-export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
+export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFuncasDaFrente }) => {
   const { profile: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
 
   const [frentes, setFrentes] = useState<Front[]>([]);
   const [membros, setMembros] = useState<FrontMember[]>([]);
   const [todosMoradores, setTodosMoradores] = useState<Profile[]>([]);
+  const [funcasCountMap, setFuncasCountMap] = useState<Record<string, number>>({});
+  const [funcasFrente, setFuncasFrente] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Frente selecionada para detalhes / gerenciamento
@@ -51,15 +55,37 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
         setMembros(membersData as FrontMember[]);
       }
 
-      // 3. Busca lista de todos os moradores ativos para o admin poder alocar
+      // 3. Busca lista de moradores ativos (apenas moradores e admins, excluindo externos)
       const { data: profilesData } = await supabase
         .from('profiles')
         .select('*')
         .eq('ativo', true)
+        .in('role', ['morador', 'admin'])
         .order('nome');
 
       if (profilesData) {
-        setTodosMoradores(profilesData as Profile[]);
+        setTodosMoradores(
+          (profilesData as Profile[]).filter(
+            (p) => p.role === 'morador' || p.role === 'admin'
+          )
+        );
+      }
+
+      // 4. Busca contagem de funças pendentes por frente
+      const { data: funcasData } = await supabase
+        .from('funcas')
+        .select('id, frente_id')
+        .neq('status', 'concluida')
+        .not('frente_id', 'is', null);
+
+      if (funcasData) {
+        const countMap: Record<string, number> = {};
+        funcasData.forEach((f) => {
+          if (f.frente_id) {
+            countMap[f.frente_id] = (countMap[f.frente_id] || 0) + 1;
+          }
+        });
+        setFuncasCountMap(countMap);
       }
     } catch (err) {
       console.error('[Frentes] Erro ao carregar dados:', err);
@@ -72,23 +98,49 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
     carregarDados();
   }, []);
 
+  // Carrega funças da frente selecionada
+  useEffect(() => {
+    if (!frenteSelecionada) {
+      setFuncasFrente([]);
+      return;
+    }
+
+    supabase
+      .from('funcas')
+      .select('id, titulo, status, prazo, atribuicoes:funca_atribuicoes(morador:profiles(id, apelido, nome))')
+      .eq('frente_id', frenteSelecionada.id)
+      .neq('status', 'concluida')
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (data) setFuncasFrente(data);
+      });
+  }, [frenteSelecionada]);
+
   // Membros da frente atualmente aberta
+  // Membros da frente atualmente aberta (excluindo convidados externos)
   const membrosDaFrente = frenteSelecionada
-    ? membros.filter((m) => m.front_id === frenteSelecionada.id)
+    ? membros.filter((m) => m.front_id === frenteSelecionada.id && m.profile?.role !== 'externo')
     : [];
 
   const lideres = membrosDaFrente.filter((m) => m.is_lider);
   const integrantes = membrosDaFrente.filter((m) => !m.is_lider);
 
-  // Moradores que ainda NÃO fazem parte desta frente selecionada
-  const moradoresDisponiveis = todosMoradores.filter(
-    (m) => !membrosDaFrente.some((mf) => mf.profile_id === m.id)
-  );
+  // Moradores que ainda NÃO fazem parte desta frente selecionada (apenas moradores/admins)
+  const moradoresDisponiveis = todosMoradores
+    .filter((m) => m.role === 'morador' || m.role === 'admin')
+    .filter((m) => !membrosDaFrente.some((mf) => mf.profile_id === m.id));
 
   // Adicionar morador à frente
   const handleAdicionarMorador = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!frenteSelecionada || !moradorSelecionadoId) return;
+
+    // Defesa em profundidade: rejeita qualquer perfil que não seja morador/admin ativo da casa
+    const morador = todosMoradores.find((m) => m.id === moradorSelecionadoId);
+    if (!morador || (morador.role !== 'morador' && morador.role !== 'admin') || !morador.ativo) {
+      setFeedback({ tipo: 'erro', texto: 'Apenas moradores ativos da república podem ser vinculados a uma frente.' });
+      return;
+    }
 
     setSalvando(true);
     setFeedback(null);
@@ -194,7 +246,10 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                 }}
                 right={
                   <span className="flex items-center gap-1.5 text-xs text-muted">
-                    {fm.length > 0 && <Tag tone="green">{fm.length}</Tag>}
+                    {funcasCountMap[f.id] > 0 && (
+                      <Tag tone="alert">{funcasCountMap[f.id]} {funcasCountMap[f.id] === 1 ? 'funça' : 'funças'}</Tag>
+                    )}
+                    {fm.length > 0 && <Tag tone="green">{fm.length} {fm.length === 1 ? 'membro' : 'membros'}</Tag>}
                     <span className="text-muted">›</span>
                   </span>
                 }
@@ -239,7 +294,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                     variant="outline"
                     onClick={() => {
                       setModalAdicionar(true);
-                      setMoradorSelecionadoId(moradoresDisponiveis[0]?.id || '');
+                      setMoradorSelecionadoId('');
                     }}
                   >
                     <span className="flex items-center justify-center gap-2">
@@ -360,6 +415,60 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                   </div>
                 )}
               </div>
+
+              {/* Seção de Funças da Frente */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">
+                    Funças desta Frente ({funcasFrente.length})
+                  </h4>
+                  {onOpenFuncasDaFrente && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const frontId = frenteSelecionada.id;
+                        setFrenteSelecionada(null);
+                        onOpenFuncasDaFrente(frontId);
+                      }}
+                      className="text-xs text-forest hover:text-forest-dark font-medium"
+                    >
+                      Abrir no painel ›
+                    </button>
+                  )}
+                </div>
+
+                {funcasFrente.length === 0 ? (
+                  <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
+                    Nenhuma funça pendente nesta frente.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {funcasFrente.map((funca) => {
+                      const donos = (funca.atribuicoes || [])
+                        .map((a: any) => a.morador?.apelido || a.morador?.nome || 'Morador')
+                        .join(', ');
+
+                      return (
+                        <div
+                          key={funca.id}
+                          className="p-3 rounded-xl border border-line bg-surface flex items-start justify-between gap-2"
+                        >
+                          <div>
+                            <p className="text-xs font-semibold text-ink">{funca.titulo}</p>
+                            <p className="text-[11px] text-muted mt-0.5">
+                              {donos ? `Responsável: ${donos}` : 'Sem responsável'}
+                              {funca.prazo && ` · Prazo: ${funca.prazo}`}
+                            </p>
+                          </div>
+                          <Tag tone={funca.status === 'em_andamento' ? 'green' : 'neutral'}>
+                            {funca.status === 'aberta' ? 'Aberta' : 'Em andamento'}
+                          </Tag>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Footer */}
@@ -405,9 +514,10 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                     required
                     className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
                   >
+                    <option value="">Selecione um morador...</option>
                     {moradoresDisponiveis.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.apelido || m.nome} — Geração {m.geracao || '025'}
+                        {obterApelidoMorador(m)} — Geração {m.geracao || '025'}
                       </option>
                     ))}
                   </select>
