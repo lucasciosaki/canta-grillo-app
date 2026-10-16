@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
-import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
+import { Button, LinkButton, PageTitle, Row, Section } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
 import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
 import { useAuth } from './contexts/AuthContext';
@@ -11,6 +11,7 @@ import { FrentesScreen } from './features/frentes/FrentesScreen';
 import { MisturasScreen } from './features/refeicoes/MisturasScreen';
 import { DenunciaPontoScreen } from './features/pontos/DenunciaPontoScreen';
 import { QuadroPontosScreen } from './features/faxina/QuadroPontosScreen';
+import { CervejasScreen } from './features/cervejas/CervejasScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
@@ -39,12 +40,6 @@ const funcas = [
   { title: 'Comprar cloro e medir pH', frente: 'Piscina', status: 'Em andamento', minha: true },
   { title: 'Levar sacos de lixo para a rua', frente: 'Geral', status: 'Atribuída', minha: false },
   { title: 'Regar o jardim da frente', frente: 'Jardim', status: 'Aberta', minha: false },
-];
-
-const dividas = [
-  { devedor: 'Ganso', motivo: 'Passou no estágio', status: 'Pendente' },
-  { devedor: 'Cachorrão', motivo: 'Começou a namorar', status: 'Baixa solicitada' },
-  { devedor: 'Bixo 026', motivo: '7 pontos em outubro', status: 'Pendente' },
 ];
 
 
@@ -437,21 +432,7 @@ function MainApp() {
         );
 
       case 'cervejas':
-        return (
-          <>
-            <PageTitle title="Cervejas" hint="Cada lançamento vale uma caixa" back={back} />
-            <Section>
-              {dividas.map((d) => (
-                <Row
-                  key={d.devedor + d.motivo}
-                  title={d.devedor}
-                  meta={d.motivo}
-                  right={<Tag tone={d.status === 'Pendente' ? 'alert' : 'green'}>{d.status}</Tag>}
-                />
-              ))}
-            </Section>
-          </>
-        );
+        return <CervejasScreen onBack={goBack} />;
 
       case 'frentes':
         return <FrentesScreen onBack={goBack} />;

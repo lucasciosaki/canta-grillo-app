@@ -260,20 +260,25 @@ CREATE OR REPLACE FUNCTION public.check_pontos_gerar_cerveja()
 RETURNS TRIGGER AS $$
 DECLARE
     v_total_pontos INT;
-    v_mes_inicio DATE := DATE_TRUNC('month', NEW.assumida_em);
-    v_mes_fim DATE := (DATE_TRUNC('month', NEW.assumida_em) + INTERVAL '1 month - 1 day')::DATE;
+    v_data_ref TIMESTAMPTZ := COALESCE(NEW.assumida_em, NOW());
+    v_mes_inicio DATE := DATE_TRUNC('month', v_data_ref)::DATE;
+    v_mes_fim DATE := (DATE_TRUNC('month', v_data_ref) + INTERVAL '1 month - 1 day')::DATE;
 BEGIN
-    -- Apenas atua quando um ponto de bagunça for assumido por um culpado
-    IF (NEW.status = 'assumida' AND NEW.culpado_id IS NOT NULL) THEN
+    -- Atua apenas quando o registro entra no status 'assumida' com um culpado definido
+    IF (
+        NEW.status = 'assumida'
+        AND NEW.culpado_id IS NOT NULL
+        AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'assumida')
+    ) THEN
         SELECT COUNT(*)
         INTO v_total_pontos
         FROM public.pontos_bagunca
         WHERE culpado_id = NEW.culpado_id
           AND status = 'assumida'
-          AND assumida_em::DATE BETWEEN v_mes_inicio AND v_mes_fim;
+          AND COALESCE(assumida_em, created_at)::DATE BETWEEN v_mes_inicio AND v_mes_fim;
 
-        -- Se atingir exatamente 7 pontos (ou múltiplos), insere a pendência da caixa de cerveja
-        IF (v_total_pontos % 7 = 0) THEN
+        -- A cada múltiplo exato de 7 pontos no mês civil, gera 1 caixa unitária
+        IF (v_total_pontos > 0 AND v_total_pontos % 7 = 0) THEN
             INSERT INTO public.caixas_cerveja (
                 morador_id,
                 motivo_descricao,
@@ -282,7 +287,7 @@ BEGIN
                 status
             ) VALUES (
                 NEW.culpado_id,
-                'Acúmulo de 7 pontos de bagunça em ' || TO_CHAR(NEW.assumida_em, 'MM/YYYY'),
+                'Acúmulo de ' || v_total_pontos || ' pontos de bagunça em ' || TO_CHAR(v_data_ref, 'MM/YYYY'),
                 'pontos',
                 CURRENT_DATE,
                 'pendente'
@@ -295,7 +300,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS trg_gerar_cerveja_por_pontos ON public.pontos_bagunca;
 CREATE TRIGGER trg_gerar_cerveja_por_pontos
-AFTER UPDATE OF status ON public.pontos_bagunca
+AFTER INSERT OR UPDATE OF status ON public.pontos_bagunca
 FOR EACH ROW
 EXECUTE FUNCTION public.check_pontos_gerar_cerveja();
 
@@ -873,6 +878,100 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.regras_quadro_pontos;
   END IF;
 END $$;
+
+-- ==============================================================================
+-- 7. POLÍTICAS RLS E TRIGGERS: GESTÃO DE CAIXAS DE CERVEJA (RN07)
+-- ==============================================================================
+
+-- 7.1 Habilitar Row Level Security em public.caixas_cerveja
+ALTER TABLE public.caixas_cerveja ENABLE ROW LEVEL SECURITY;
+
+-- SELECT: Moradores ativos e Administradores leem todo o mural e histórico
+DROP POLICY IF EXISTS "Moradores ativos e admin leem caixas de cerveja" ON public.caixas_cerveja;
+CREATE POLICY "Moradores ativos e admin leem caixas de cerveja"
+ON public.caixas_cerveja FOR SELECT
+TO authenticated
+USING (
+  public.is_admin() OR public.is_active_morador()
+);
+
+-- INSERT: Exclusivo para Administradores em lançamentos manuais
+DROP POLICY IF EXISTS "Apenas admin lanca caixa de cerveja manual" ON public.caixas_cerveja;
+CREATE POLICY "Apenas admin lanca caixa de cerveja manual"
+ON public.caixas_cerveja FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() AND origem = 'manual'
+);
+
+-- UPDATE: Admin gerencia qualquer status; Morador ativo solicita baixa da própria caixa
+DROP POLICY IF EXISTS "Admin liquida ou morador solicita baixa de cerveja" ON public.caixas_cerveja;
+CREATE POLICY "Admin liquida ou morador solicita baixa de cerveja"
+ON public.caixas_cerveja FOR UPDATE
+TO authenticated
+USING (
+  public.is_admin() OR (public.is_active_morador() AND morador_id = auth.uid())
+)
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador()
+    AND morador_id = auth.uid()
+    AND status = 'baixa_solicitada'
+  )
+);
+
+-- DELETE: Exclusivo para Administradores
+DROP POLICY IF EXISTS "Apenas admin remove caixa de cerveja" ON public.caixas_cerveja;
+CREATE POLICY "Apenas admin remove caixa de cerveja"
+ON public.caixas_cerveja FOR DELETE
+TO authenticated
+USING (
+  public.is_admin()
+);
+
+-- 7.2 Trigger de Proteção de Colunas e Transição de Status
+CREATE OR REPLACE FUNCTION public.protect_caixas_cerveja_update()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT public.is_admin() THEN
+    IF OLD.status <> 'pendente' OR NEW.status <> 'baixa_solicitada' THEN
+      RAISE EXCEPTION 'Moradores só podem solicitar baixa de caixas com status pendente.';
+    END IF;
+
+    IF NEW.morador_id IS DISTINCT FROM OLD.morador_id
+       OR NEW.motivo_descricao IS DISTINCT FROM OLD.motivo_descricao
+       OR NEW.origem IS DISTINCT FROM OLD.origem
+       OR NEW.data_atribuicao IS DISTINCT FROM OLD.data_atribuicao
+       OR NEW.baixada_em IS DISTINCT FROM OLD.baixada_em
+       OR NEW.baixada_por IS DISTINCT FROM OLD.baixada_por
+    THEN
+      RAISE EXCEPTION 'Não é permitido alterar dados cadastrais ou de auditoria da caixa de cerveja.';
+    END IF;
+
+    NEW.solicitada_em := COALESCE(NEW.solicitada_em, NOW());
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_protect_caixas_cerveja_update ON public.caixas_cerveja;
+CREATE TRIGGER trg_protect_caixas_cerveja_update
+BEFORE UPDATE ON public.caixas_cerveja
+FOR EACH ROW
+EXECUTE FUNCTION public.protect_caixas_cerveja_update();
+
+-- 7.3 Habilita Realtime na tabela public.caixas_cerveja
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'caixas_cerveja'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.caixas_cerveja;
+  END IF;
+END $$;
+
 
 
 
