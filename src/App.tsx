@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
-import { Button, LinkButton, PageTitle, Row, Section } from './components/ui';
+import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
 import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
 import { useAuth } from './contexts/AuthContext';
@@ -12,6 +12,7 @@ import { MisturasScreen } from './features/refeicoes/MisturasScreen';
 import { DenunciaPontoScreen } from './features/pontos/DenunciaPontoScreen';
 import { QuadroPontosScreen } from './features/faxina/QuadroPontosScreen';
 import { CervejasScreen } from './features/cervejas/CervejasScreen';
+import { FuncasScreen } from './features/funcas/FuncasScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
@@ -21,27 +22,6 @@ type Screen =
   | 'misturas' | 'quadro' | 'pontoBagunca'
   | 'funcas' | 'cervejas' | 'frentes'
   | 'aprovacoes';
-
-const screenTitle: Record<Screen, string> = {
-  home: 'Início',
-  rotina: 'Rotina',
-  casa: 'Casa',
-  misturas: 'Misturas',
-  quadro: 'Quadro de pontos',
-  pontoBagunca: 'Ponto de Bagunça',
-  funcas: 'Funças',
-  cervejas: 'Cervejas',
-  frentes: 'Frentes',
-  aprovacoes: 'Aprovações',
-};
-
-const funcas = [
-  { title: 'Trocar lâmpada do corredor', frente: 'Manutenção', status: 'Aberta', minha: true },
-  { title: 'Comprar cloro e medir pH', frente: 'Piscina', status: 'Em andamento', minha: true },
-  { title: 'Levar sacos de lixo para a rua', frente: 'Geral', status: 'Atribuída', minha: false },
-  { title: 'Regar o jardim da frente', frente: 'Jardim', status: 'Aberta', minha: false },
-];
-
 
 const chevron = <span className="text-muted">›</span>;
 
@@ -58,8 +38,10 @@ function MainApp() {
   const [minhaMarcaHoje, setMinhaMarcaHoje] = useState<string | null>(null);
   const [totalMisturasHoje, setTotalMisturasHoje] = useState<number | null>(null);
 
+  const [funcasReais, setFuncasReais] = useState<any[]>([]);
+  const [frenteFiltroFuncas, setFrenteFiltroFuncas] = useState<string | null>(null);
+
   const screen = stack[stack.length - 1];
-  const previous = stack.length > 1 ? stack[stack.length - 2] : null;
 
   // Carrega pontos de bagunça, visualizações e mensagens do Supabase
   const carregarPontosBagunca = useCallback(async () => {
@@ -178,12 +160,57 @@ function MainApp() {
       });
   }, [user?.id, screen]);
 
+  // Carrega funças para a seção da Home
+  const carregarFuncasHome = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('funcas')
+        .select(
+          'id, titulo, status, prazo, frente_id, frente:fronts(id, nome), atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para)'
+        )
+        .order('created_at', { ascending: false });
+      if (!error && data) {
+        setFuncasReais(data);
+      }
+    } catch (err) {
+      console.error('[App] Erro ao carregar funcas:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    carregarFuncasHome();
+  }, [carregarFuncasHome]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('home-funcas-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'funcas' },
+        () => carregarFuncasHome()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'funca_atribuicoes' },
+        () => carregarFuncasHome()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [carregarFuncasHome]);
+
   const go = (s: Screen) => setStack((st) => [...st, s]);
   const goBack = () => setStack((st) => st.slice(0, -1));
   const selectTab = (tab: MainTab) => setStack([tab]);
 
-  const back = previous ? { label: screenTitle[previous], onClick: goBack } : undefined;
-  const funcasPendentes = funcas.filter((f) => f.minha);
+  const minhasFuncasPendentes = funcasReais.filter(
+    (f) => f.status !== 'concluida' && f.atribuicoes?.some((a: any) => a.morador_id === user?.id)
+  );
+  const temTrocaPendenteHome = funcasReais.some(
+    (f) => f.atribuicoes?.some((a: any) => a.troca_solicitada_para === user?.id)
+  );
 
   // Identificação dinâmica do morador logado (estritamente apelido da república)
   const nomeExibicao =
@@ -335,14 +362,27 @@ function MainApp() {
             
 
             <Section title="Suas funças pendentes">
-              {funcasPendentes.length === 0 ? (
-                <Row title="Nenhuma funça pendente" meta="Aproveite o dia" />
+              {temTrocaPendenteHome && (
+                <Row
+                  title="Pedido de troca de funça recebido!"
+                  meta="Toque para ver e aceitar ou recusar"
+                  onClick={() => go('funcas')}
+                  right={<Tag tone="alert">Troca pendente</Tag>}
+                />
+              )}
+              {minhasFuncasPendentes.length === 0 ? (
+                <Row
+                  title="Nenhuma funça pendente"
+                  meta="Aproveite o dia ou veja as funças da casa"
+                  onClick={() => go('funcas')}
+                  right={chevron}
+                />
               ) : (
-                funcasPendentes.map((f) => (
+                minhasFuncasPendentes.map((f) => (
                   <Row
-                    key={f.title}
-                    title={f.title}
-                    meta={`${f.frente} · ${f.status}`}
+                    key={f.id}
+                    title={f.titulo}
+                    meta={`${f.frente?.nome || 'Geral'} · ${f.status === 'aberta' ? 'Aberta' : 'Em andamento'}`}
                     onClick={() => go('funcas')}
                     right={chevron}
                   />
@@ -411,31 +451,26 @@ function MainApp() {
 
       case 'funcas':
         return (
-          <>
-            <PageTitle
-              title="Funças"
-              hint="Tarefas gerais e das frentes"
-              back={back}
-              action={<Button>Nova</Button>}
-            />
-            <Section title="Atribuídas a você">
-              {funcas.filter((f) => f.minha).map((f) => (
-                <Row key={f.title} title={f.title} meta={`${f.frente} · ${f.status}`} />
-              ))}
-            </Section>
-            <Section title="Da casa">
-              {funcas.filter((f) => !f.minha).map((f) => (
-                <Row key={f.title} title={f.title} meta={`${f.frente} · ${f.status}`} />
-              ))}
-            </Section>
-          </>
+          <FuncasScreen
+            onBack={goBack}
+            initialFrontId={frenteFiltroFuncas}
+            onClearInitialFront={() => setFrenteFiltroFuncas(null)}
+          />
         );
 
       case 'cervejas':
         return <CervejasScreen onBack={goBack} />;
 
       case 'frentes':
-        return <FrentesScreen onBack={goBack} />;
+        return (
+          <FrentesScreen
+            onBack={goBack}
+            onOpenFuncasDaFrente={(frontId) => {
+              setFrenteFiltroFuncas(frontId);
+              go('funcas');
+            }}
+          />
+        );
 
       case 'aprovacoes':
         return <AprovacoesScreen onBack={goBack} />;
