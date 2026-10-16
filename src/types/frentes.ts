@@ -162,7 +162,7 @@ export function verificarPermissaoFrente(
 
 /**
  * Filtra apenas as funças pendentes da frente (aberta ou em_andamento),
- * ordenando 'em_andamento' no topo, e em seguida por prazo mais próximo.
+ * ordenando 'aberta' no topo, e em seguida 'em_andamento'.
  */
 export function filtrarFuncasPendentesDaFrente(
   funcas: FuncaFrente[],
@@ -175,9 +175,9 @@ export function filtrarFuncasPendentesDaFrente(
         (f.status === 'aberta' || f.status === 'em_andamento')
     )
     .sort((a, b) => {
-      // Prioridade 1: 'em_andamento' antes de 'aberta'
-      if (a.status === 'em_andamento' && b.status !== 'em_andamento') return -1;
-      if (b.status === 'em_andamento' && a.status !== 'em_andamento') return 1;
+      // Prioridade 1: 'aberta' antes de 'em_andamento'
+      if (a.status === 'aberta' && b.status !== 'aberta') return -1;
+      if (b.status === 'aberta' && a.status !== 'aberta') return 1;
 
       // Prioridade 2: prazo definido
       if (a.prazo && b.prazo) return a.prazo.localeCompare(b.prazo);

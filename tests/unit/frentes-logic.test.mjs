@@ -143,9 +143,9 @@ describe('Unit Tests: Frentes Organizacionais & Chats (RN08, RN09, RN10, RN11, R
     it('deve filtrar apenas funças pendentes (aberta ou em_andamento) daquela frente específica', () => {
       const pendentes = filtrarFuncasPendentesDaFrente(funcas, 'f-manutencao');
       assert.equal(pendentes.length, 2);
-      // 'em_andamento' deve estar no topo
-      assert.equal(pendentes[0].id, 'funca-2');
-      assert.equal(pendentes[1].id, 'funca-1');
+      // 'aberta' deve estar no topo e depois 'em_andamento'
+      assert.equal(pendentes[0].id, 'funca-1');
+      assert.equal(pendentes[1].id, 'funca-2');
     });
 
     it('regras de permissão de atribuição', () => {
