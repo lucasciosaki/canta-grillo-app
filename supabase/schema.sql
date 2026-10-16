@@ -184,15 +184,24 @@ CREATE TABLE IF NOT EXISTS public.funcas (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 13. ATRIBUIÇÃO DE FUNÇAS
+-- 13. ATRIBUIÇÃO DE FUNÇAS (Suporta múltiplos responsáveis e Solicitação de Troca)
 CREATE TABLE IF NOT EXISTS public.funca_atribuicoes (
     funca_id UUID NOT NULL REFERENCES public.funcas(id) ON DELETE CASCADE,
     morador_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     atribuido_por UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
-    tipo_atribuicao TEXT NOT NULL CHECK (tipo_atribuicao IN ('autoatribuicao', 'lider_frente', 'veterano_bixo', 'admin_geral', 'reuniao')),
+    tipo_atribuicao TEXT NOT NULL CHECK (tipo_atribuicao IN ('autoatribuicao', 'lider_frente', 'veterano_bixo', 'admin_geral', 'reuniao', 'troca')),
     atribuido_em TIMESTAMPTZ DEFAULT NOW(),
+    troca_solicitada_para UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    troca_solicitada_em TIMESTAMPTZ,
     PRIMARY KEY (funca_id, morador_id)
 );
+
+-- Garantir colunas e constraint atualizada caso a tabela já exista no banco
+ALTER TABLE public.funca_atribuicoes ADD COLUMN IF NOT EXISTS troca_solicitada_para UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+ALTER TABLE public.funca_atribuicoes ADD COLUMN IF NOT EXISTS troca_solicitada_em TIMESTAMPTZ;
+ALTER TABLE public.funca_atribuicoes DROP CONSTRAINT IF EXISTS funca_atribuicoes_tipo_atribuicao_check;
+ALTER TABLE public.funca_atribuicoes ADD CONSTRAINT funca_atribuicoes_tipo_atribuicao_check
+    CHECK (tipo_atribuicao IN ('autoatribuicao', 'lider_frente', 'veterano_bixo', 'admin_geral', 'reuniao', 'troca'));
 
 -- 14. CHAT INTERNO DAS FRENTES
 CREATE TABLE IF NOT EXISTS public.mensagens_frente (
@@ -517,7 +526,15 @@ DROP POLICY IF EXISTS "Apenas admin insere membros na frente" ON public.front_me
 CREATE POLICY "Apenas admin insere membros na frente"
 ON public.front_members FOR INSERT
 TO authenticated
-WITH CHECK (public.is_admin());
+WITH CHECK (
+  public.is_admin() AND
+  EXISTS (
+    SELECT 1 FROM public.profiles p
+    WHERE p.id = front_members.profile_id
+      AND p.role IN ('morador', 'admin')
+      AND p.ativo = true
+  )
+);
 
 DROP POLICY IF EXISTS "Apenas admin altera lideranca" ON public.front_members;
 CREATE POLICY "Apenas admin altera lideranca"
@@ -961,7 +978,245 @@ BEFORE UPDATE ON public.caixas_cerveja
 FOR EACH ROW
 EXECUTE FUNCTION public.protect_caixas_cerveja_update();
 
--- 7.3 Habilita Realtime na tabela public.caixas_cerveja
+-- ==============================================================================
+-- 8. SISTEMA GERAL DE FUNÇAS E REUNIÃO SEMANAL: HELPERS, RPC DE TROCA E RLS
+-- ==============================================================================
+
+-- Extrai o número inteiro de uma geração (ex: '024' -> 24, '025' -> 25)
+CREATE OR REPLACE FUNCTION public.geracao_num(p_geracao TEXT)
+RETURNS INT AS $$
+DECLARE
+  v_clean TEXT;
+BEGIN
+  IF p_geracao IS NULL THEN
+    RETURN NULL;
+  END IF;
+  v_clean := NULLIF(REGEXP_REPLACE(p_geracao, '\D', '', 'g'), '');
+  IF v_clean IS NULL THEN
+    RETURN NULL;
+  END IF;
+  RETURN v_clean::INT;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Verifica se p_veterano_id é veterano de p_bixo_id (geracao menor = mais antigo na casa)
+CREATE OR REPLACE FUNCTION public.is_veterano_de(p_veterano_id UUID, p_bixo_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.profiles vet
+    JOIN public.profiles bixo ON bixo.id = p_bixo_id
+    WHERE vet.id = p_veterano_id
+      AND vet.ativo = true
+      AND vet.role IN ('morador', 'admin')
+      AND bixo.ativo = true
+      AND public.geracao_num(vet.geracao) IS NOT NULL
+      AND public.geracao_num(bixo.geracao) IS NOT NULL
+      AND public.geracao_num(vet.geracao) < public.geracao_num(bixo.geracao)
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- Verifica se o usuário é líder de uma frente específica
+CREATE OR REPLACE FUNCTION public.is_lider_frente(p_frente_id UUID, p_user_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.front_members fm
+    JOIN public.profiles p ON p.id = fm.profile_id
+    WHERE fm.front_id = p_frente_id
+      AND fm.profile_id = p_user_id
+      AND fm.is_lider = true
+      AND p.ativo = true
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- Verifica se o usuário é integrante (membro ou líder) de uma frente específica
+CREATE OR REPLACE FUNCTION public.is_membro_frente(p_frente_id UUID, p_user_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.front_members fm
+    JOIN public.profiles p ON p.id = fm.profile_id
+    WHERE fm.front_id = p_frente_id
+      AND fm.profile_id = p_user_id
+      AND p.ativo = true
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- RPC Transacional para Aceitar Solicitação de Troca de Funça
+CREATE OR REPLACE FUNCTION public.aceitar_troca_funca(p_funca_id UUID, p_morador_origem_id UUID)
+RETURNS VOID AS $$
+DECLARE
+  v_alvo_id UUID;
+BEGIN
+  SELECT troca_solicitada_para INTO v_alvo_id
+  FROM public.funca_atribuicoes
+  WHERE funca_id = p_funca_id AND morador_id = p_morador_origem_id;
+
+  IF v_alvo_id IS NULL OR v_alvo_id <> auth.uid() THEN
+    RAISE EXCEPTION 'Nenhuma solicitação de troca pendente para o seu usuário nesta funça.';
+  END IF;
+
+  -- Remove a atribuição do solicitante original
+  DELETE FROM public.funca_atribuicoes
+  WHERE funca_id = p_funca_id AND morador_id = p_morador_origem_id;
+
+  -- Insere o morador que aceitou a troca (se ainda não estiver atribuído na mesma funça)
+  INSERT INTO public.funca_atribuicoes (
+    funca_id,
+    morador_id,
+    atribuido_por,
+    tipo_atribuicao,
+    atribuido_em,
+    troca_solicitada_para,
+    troca_solicitada_em
+  ) VALUES (
+    p_funca_id,
+    auth.uid(),
+    p_morador_origem_id,
+    'troca',
+    NOW(),
+    NULL,
+    NULL
+  )
+  ON CONFLICT (funca_id, morador_id) DO UPDATE SET
+    troca_solicitada_para = NULL,
+    troca_solicitada_em = NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Habilitar RLS nas tabelas funcas e funca_atribuicoes
+ALTER TABLE public.funcas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.funca_atribuicoes ENABLE ROW LEVEL SECURITY;
+
+-- POLÍTICAS EM public.funcas
+DROP POLICY IF EXISTS "Leitura de funcas para moradores ativos" ON public.funcas;
+CREATE POLICY "Leitura de funcas para moradores ativos"
+ON public.funcas FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Abertura de funcas por moradores ativos" ON public.funcas;
+CREATE POLICY "Abertura de funcas por moradores ativos"
+ON public.funcas FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND relator_id = auth.uid()
+  )
+);
+
+DROP POLICY IF EXISTS "Atualizacao de funcas por moradores ativos" ON public.funcas;
+CREATE POLICY "Atualizacao de funcas por moradores ativos"
+ON public.funcas FOR UPDATE
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Exclusao de funcas por admin, lider, veterano ou relator" ON public.funcas;
+CREATE POLICY "Exclusao de funcas por admin, lider, veterano ou relator"
+ON public.funcas FOR DELETE
+TO authenticated
+USING (
+  public.is_admin() OR (
+    public.is_active_morador() AND (
+      relator_id = auth.uid() OR
+      (frente_id IS NOT NULL AND public.is_lider_frente(frente_id, auth.uid()))
+    )
+  )
+);
+
+-- POLÍTICAS EM public.funca_atribuicoes
+DROP POLICY IF EXISTS "Leitura de atribuicoes de funcas" ON public.funca_atribuicoes;
+CREATE POLICY "Leitura de atribuicoes de funcas"
+ON public.funca_atribuicoes FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Insercao de atribuicoes de funcas com regras RN09" ON public.funca_atribuicoes;
+CREATE POLICY "Insercao de atribuicoes de funcas com regras RN09"
+ON public.funca_atribuicoes FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND
+    atribuido_por = auth.uid() AND (
+      -- 1. Modo Reunião Semanal: qualquer morador ativo secretariando pode alocar
+      tipo_atribuicao = 'reuniao'
+      OR
+      -- 2. Regras para Funça de Frente vs Funça Geral
+      EXISTS (
+        SELECT 1 FROM public.funcas f
+        WHERE f.id = funca_id AND (
+          -- Funça de Frente (frente_id IS NOT NULL)
+          (
+            f.frente_id IS NOT NULL AND (
+              (tipo_atribuicao = 'lider_frente' AND public.is_lider_frente(f.frente_id, auth.uid()) AND public.is_membro_frente(f.frente_id, morador_id))
+              OR
+              (tipo_atribuicao = 'autoatribuicao' AND morador_id = auth.uid() AND public.is_membro_frente(f.frente_id, auth.uid()))
+            )
+          )
+          OR
+          -- Funça Geral (frente_id IS NULL)
+          (
+            f.frente_id IS NULL AND (
+              (tipo_atribuicao = 'veterano_bixo' AND public.is_veterano_de(auth.uid(), morador_id))
+              OR
+              (tipo_atribuicao = 'autoatribuicao' AND morador_id = auth.uid())
+            )
+          )
+        )
+      )
+    )
+  )
+);
+
+DROP POLICY IF EXISTS "Atualizacao de atribuicao para solicitacao de troca" ON public.funca_atribuicoes;
+CREATE POLICY "Atualizacao de atribuicao para solicitacao de troca"
+ON public.funca_atribuicoes FOR UPDATE
+TO authenticated
+USING (
+  public.is_admin() OR (
+    public.is_active_morador() AND (
+      morador_id = auth.uid() OR
+      troca_solicitada_para = auth.uid() OR
+      public.is_veterano_de(auth.uid(), morador_id)
+    )
+  )
+)
+WITH CHECK (
+  public.is_admin() OR (
+    public.is_active_morador() AND (
+      morador_id = auth.uid() OR
+      troca_solicitada_para = auth.uid() OR
+      troca_solicitada_para IS NULL OR
+      public.is_veterano_de(auth.uid(), morador_id)
+    )
+  )
+);
+
+DROP POLICY IF EXISTS "Remocao de atribuicao restrita a admin, lider ou veterano" ON public.funca_atribuicoes;
+CREATE POLICY "Remocao de atribuicao restrita a admin, lider ou veterano"
+ON public.funca_atribuicoes FOR DELETE
+TO authenticated
+USING (
+  public.is_admin() OR (
+    public.is_active_morador() AND (
+      -- Veterano do morador atribuído pode removê-lo (inclusive em Funça de Frente)
+      public.is_veterano_de(auth.uid(), morador_id)
+      OR
+      -- Líder da frente da funça pode remover responsáveis daquela funça
+      EXISTS (
+        SELECT 1 FROM public.funcas f
+        WHERE f.id = funca_id
+          AND f.frente_id IS NOT NULL
+          AND public.is_lider_frente(f.frente_id, auth.uid())
+      )
+    )
+  )
+);
+
+-- Habilita Realtime para caixas_cerveja, funcas e funca_atribuicoes
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -969,6 +1224,20 @@ BEGIN
     WHERE pubname = 'supabase_realtime' AND tablename = 'caixas_cerveja'
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.caixas_cerveja;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'funcas'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.funcas;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'funca_atribuicoes'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.funca_atribuicoes;
   END IF;
 END $$;
 

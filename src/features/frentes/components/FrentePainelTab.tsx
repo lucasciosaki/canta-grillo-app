@@ -25,6 +25,7 @@ interface FrentePainelTabProps {
   isAdmin: boolean;
   isLider: boolean;
   isMembro: boolean;
+  onOpenFuncasGeral?: () => void;
 }
 
 export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
@@ -33,6 +34,7 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
   isAdmin,
   isLider,
   isMembro,
+  onOpenFuncasGeral,
 }) => {
   const { user } = useAuth();
   const [funcas, setFuncas] = useState<FuncaFrente[]>([]);
@@ -220,12 +222,19 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
             {funcasPendentes.length} {funcasPendentes.length === 1 ? 'pendência' : 'pendências'} no painel
           </p>
         </div>
-        <Button variant="outline" onClick={() => setModalNovaFunca(true)}>
-          <span className="flex items-center gap-1.5 text-xs font-semibold">
-            <PlusCircle className="w-3.5 h-3.5 text-forest" />
-            Nova Funça
-          </span>
-        </Button>
+        <div className="flex items-center gap-2">
+          {onOpenFuncasGeral && (
+            <Button variant="outline" onClick={onOpenFuncasGeral}>
+              <span className="text-xs">Ver no Mural Geral ›</span>
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setModalNovaFunca(true)}>
+            <span className="flex items-center gap-1.5 text-xs font-semibold">
+              <PlusCircle className="w-3.5 h-3.5 text-white" />
+              Nova Funça
+            </span>
+          </Button>
+        </div>
       </div>
 
       {loading ? (

@@ -409,9 +409,14 @@ classDiagram
    * Moradores comuns não possuem permissão de inserção em `ITEM_CATALOGO_MERCADO`. Toda solicitação vincula-se obrigatoriamente a uma tupla pré-existente no catálogo (`item_id`).
 4. **Unicidade Diária de Misturas:**
    * Chave única composta: `UNIQUE(usuario_id, data)` em `REGISTRO_MISTURA_DIARIA`, garantindo apenas um valor diário (`0.0`, `0.5`, `1.0`).
-5. **Regras de Permissão para Atribuição de Funças:**
-   * **Se `funca.frente_id IS NOT NULL` (Funça de Frente):** A atribuição a um morador só é autorizada se `atribuido_por` for Líder daquela frente (`is_lider = true`) ou se for autoatribuição (`morador_id = atribuido_por`).
-   * **Se `funca.frente_id IS NULL` (Funça Geral):** A atribuição é autorizada se `atribuido_por` for Administrador, ou se for autoatribuição, ou se o autor for veterano do alvo (`autor.geracao < alvo.geracao` na ordenação histórica).
+5. **Regras de Permissão para Atribuição e Governança de Funças (`public.funcas` & `public.funca_atribuicoes`):**
+   * **Multi-responsáveis:** A chave composta `(funca_id, morador_id)` permite 1 ou mais moradores atribuídos simultaneamente na mesma funça.
+   * **Ciclo Manual em 3 Etapas:** `aberta` -> `em_andamento` -> `concluida`. A atribuição não altera o status automaticamente; a mudança é acionada manualmente por responsáveis, líderes da frente, relator ou Admin.
+   * **Se `funca.frente_id IS NOT NULL` (Funça de Frente):** A atribuição a um morador só é autorizada se `atribuido_por` for Líder daquela frente (`is_lider = true`) atribuindo para integrante da frente, autoatribuição (`morador_id = atribuido_por`) por membro da frente, alocação na Reunião Semanal (`tipo_atribuicao = 'reuniao'`), ou por Administrador (`role = 'admin'`).
+   * **Se `funca.frente_id IS NULL` (Funça Geral):** A atribuição é autorizada se `atribuido_por` for Administrador, se for autoatribuição, se o autor for veterano do alvo (`geracao_num(autor) < geracao_num(alvo)`), ou na Reunião Semanal.
+   * **Remoção de Responsável:** Restrita exclusivamente ao Administrador, Líder da frente correspondente, ou Veterano do morador atribuído (inclusive em Funça de Frente).
+   * **Solicitação de Troca:** O morador atribuído pode solicitar troca para qualquer morador ativo da casa (`troca_solicitada_para`), que deve aceitar via RPC `aceitar_troca_funca` para efetivar a transferência da responsabilidade.
+   * **Políticas RLS e Realtime:** Tabelas `public.funcas` e `public.funca_atribuicoes` blindadas com RLS garantindo autorização no PostgreSQL e sincronização instantânea via publicação `supabase_realtime`.
 6. **Segurança de Perfis e Permissões por Cargo (Supabase RLS):**
    * **`PROFILES`:** A tabela permanece fechada contra `INSERT` via API client-side. A inserção ocorre unicamente via trigger `handle_new_user()` (`SECURITY DEFINER`) cravando `ativo = FALSE` e `role = 'morador'`.
    * **Políticas RLS em `PROFILES`:**
@@ -421,7 +426,7 @@ classDiagram
    * **`ROOMS`:** Leitura pública (`anon` e `authenticated`) para permitir a listagem de quartos no fluxo de cadastro de novo morador.
 7. **Governança de Frentes (`FRONT_MEMBERS`):**
    * **`SELECT`:** Aberto para todos os moradores autenticados consultarem as comissões.
-   * **`INSERT`, `UPDATE` e `DELETE`:** Operações exclusivas de Administradores (`public.is_admin()`), protegendo a alocação de moradores e alternância de co-liderança (`is_lider`).
+   * **`INSERT`, `UPDATE` e `DELETE`:** Operações exclusivas de Administradores (`public.is_admin()`), protegendo a alocação de moradores e alternância de co-liderança (`is_lider`). A política de `INSERT` valida adicionalmente que o morador vinculado é um morador ativo da república (`role IN ('morador', 'admin') AND ativo = true`), bloqueando a vinculação de convidados externos (`role = 'externo'`).
 8. **Folha de Misturas Digital (`DAILY_MEALS` - Supabase RLS):**
    * **`SELECT`:** Liberado a todos os moradores ativos e administradores (`authenticated`) para visualização de qualquer data e consolidação da contagem para a cozinheira. Convidado externo ativo pode consultar suas próprias refeições.
    * **`INSERT` e `UPDATE`:** Permitido exclusivamente no dia de hoje (`data = CURRENT_DATE`). Morador comum ativo (`ativo = true`) e Convidado externo ativo (`role = 'externo' AND ativo = true`) podem marcar/alterar exclusivamente a sua própria refeição (`usuario_id = auth.uid()`). Moradores inativos (`ativo = false`) têm escrita bloqueada. Administradores (`public.is_admin()`) têm permissão para marcar ou corrigir a cota de qualquer morador ou convidado no dia vigente.
@@ -603,11 +608,17 @@ flowchart LR
   - Mural de histórico transparente das caixas.
 
 ### Fase 4: Sistema Geral de "Funças", Páginas das Frentes Organizacionais & Chats
-- [x] **Sistema Geral de Funças no Painel da Frente:**
-  - Abertura de Funça vinculada à frente (com título, descrição e prazo opcional).
-  - Lógica de atribuição:
-    - Funça de Frente: Líder atribui a membros da frente ou membros se autoatribuem; Admin atribui a qualquer morador.
-  - Listagem de todas as funças pendentes (`aberta` e `em_andamento`) na aba dedicada do Painel da Frente.
+- [x] **Sistema Geral de Funças & Painel da Reunião Semanal:**
+  - Abertura de Funça geral ou vinculada a uma das 10 frentes (com título, descrição, prazo e foto opcional comprimida no cliente).
+  - Suporte a múltiplos moradores responsáveis por funça via chave composta `(funca_id, morador_id)`.
+  - Ciclo de vida manual em 3 etapas (`aberta` -> `em_andamento` -> `concluida`).
+  - Governança estrita por cargo no banco (Database-First RLS):
+    - Funça de Frente: Líder atribui a membros da frente, membros se autoatribuem ou Admin atribui globalmente.
+    - Funça Geral: Veterano atribui a seu bixo (`geracao_num(autor) < geracao_num(alvo)`), autoatribuição por qualquer morador ativo ou Admin.
+  - Mecanismo de Solicitação e Aceite de Troca de Funça entre moradores via RPC transacional `public.aceitar_troca_funca`.
+  - Remoção de responsável restrita a Admin, Líder da frente ou Veterano do morador atribuído (inclusive em Funça de Frente).
+  - Painel Centralizado da Reunião Semanal com criação rápida de funças em lote (planilha/linhas dinâmicas) e triagem coletiva das tarefas pendentes/sem dono.
+  - Exibição estrita por apelido dos moradores e sincronização em tempo real via Supabase Realtime.
 - [x] **Páginas e Módulos Específicos das Frentes Organizacionais:**
   - **Frente Mercado:**
     - Painel de gerenciamento do Catálogo Mestre (exclusivo para membros da frente e Admin).

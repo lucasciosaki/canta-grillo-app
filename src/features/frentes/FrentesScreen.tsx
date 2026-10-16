@@ -29,15 +29,20 @@ import {
 
 interface FrentesScreenProps {
   onBack: () => void;
+  onOpenFuncasDaFrente?: (frontId: string) => void;
 }
 
-export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
+export const FrentesScreen: React.FC<FrentesScreenProps> = ({
+  onBack,
+  onOpenFuncasDaFrente,
+}) => {
   const { profile: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
 
   const [frentes, setFrentes] = useState<Front[]>([]);
   const [membros, setMembros] = useState<FrontMember[]>([]);
   const [todosMoradores, setTodosMoradores] = useState<Profile[]>([]);
+  const [funcasCountMap, setFuncasCountMap] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
   // Frente selecionada para tela dedicada
@@ -68,7 +73,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
         setFrentes(frontsData as Front[]);
       }
 
-      // 2. Busca todas as alocações de membros com dados de perfil
+      // 2. Busca todas as alocações de membros com dados de perfil (apenas moradores ativos)
       const { data: membersData, error: membersError } = await supabase
         .from('front_members')
         .select('*, profile:profiles(*, quarto:rooms(*))');
@@ -86,6 +91,23 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
 
       if (profilesData) {
         setTodosMoradores(profilesData as Profile[]);
+      }
+
+      // 4. Busca contagem de funças pendentes por frente
+      const { data: funcasData } = await supabase
+        .from('funcas')
+        .select('id, frente_id, status')
+        .neq('status', 'concluida')
+        .not('frente_id', 'is', null);
+
+      if (funcasData) {
+        const counts: Record<string, number> = {};
+        funcasData.forEach((f: any) => {
+          if (f.frente_id) {
+            counts[f.frente_id] = (counts[f.frente_id] || 0) + 1;
+          }
+        });
+        setFuncasCountMap(counts);
       }
     } catch (err) {
       console.error('[Frentes] Erro ao carregar dados:', err);
@@ -106,9 +128,11 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
     isAdmin
   );
 
-  // Membros da frente atualmente aberta
+  // Membros da frente atualmente aberta (excluindo convidados externos)
   const membrosDaFrente = frenteSelecionada
-    ? membros.filter((m) => m.front_id === frenteSelecionada.id)
+    ? membros.filter(
+        (m) => m.front_id === frenteSelecionada.id && m.profile?.role !== 'externo'
+      )
     : [];
 
   const lideres = membrosDaFrente.filter((m) => m.is_lider);
@@ -118,15 +142,25 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
     ? verificarPermissaoFrente(frenteSelecionada.id, membros, currentUser?.id, isAdmin)
     : { podeAcessar: false, isMembro: false, isLider: false };
 
-  // Moradores que ainda NÃO fazem parte desta frente selecionada
-  const moradoresDisponiveis = todosMoradores.filter(
-    (m) => !membrosDaFrente.some((mf) => mf.profile_id === m.id)
-  );
+  // Moradores que ainda NÃO fazem parte desta frente selecionada (apenas moradores/admins)
+  const moradoresDisponiveis = todosMoradores
+    .filter((m) => m.role === 'morador' || m.role === 'admin')
+    .filter((m) => !membrosDaFrente.some((mf) => mf.profile_id === m.id));
 
   // Adicionar morador à frente
   const handleAdicionarMorador = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!frenteSelecionada || !moradorSelecionadoId) return;
+
+    // Defesa em profundidade: rejeita qualquer perfil que não seja morador/admin ativo da casa
+    const morador = todosMoradores.find((m) => m.id === moradorSelecionadoId);
+    if (!morador || (morador.role !== 'morador' && morador.role !== 'admin') || !morador.ativo) {
+      setFeedback({
+        tipo: 'erro',
+        texto: 'Apenas moradores ativos da república podem ser vinculados a uma frente.',
+      });
+      return;
+    }
 
     setSalvando(true);
     setFeedback(null);
@@ -184,7 +218,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
     setSalvando(false);
   };
 
-  // Se uma frente estiver selecionada, renderiza a tela dedicada da frente
+  // Se uma frente estiver selecionada, renderiza a tela dedicada da frente com abas
   if (frenteSelecionada) {
     if (!podeAcessar) {
       return (
@@ -305,6 +339,11 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
             isAdmin={Boolean(isAdmin)}
             isLider={isLider}
             isMembro={isMembro}
+            onOpenFuncasGeral={
+              onOpenFuncasDaFrente
+                ? () => onOpenFuncasDaFrente(frenteSelecionada.id)
+                : undefined
+            }
           />
         )}
 
@@ -484,6 +523,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                       required
                       className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
                     >
+                      <option value="">Selecione um morador...</option>
                       {moradoresDisponiveis.map((m) => (
                         <option key={m.id} value={m.id}>
                           {obterApelidoFrente(m)} — Geração {m.geracao || '025'}
@@ -582,7 +622,9 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
       ) : (
         <Section title={isAdmin ? '10 Frentes Oficiais (Gestão Total)' : 'Suas Frentes Organizacionais'}>
           {frentesVisiveis.map((f) => {
-            const fm = membros.filter((m) => m.front_id === f.id);
+            const fm = membros.filter(
+              (m) => m.front_id === f.id && m.profile?.role !== 'externo'
+            );
             const lideresNomes = fm
               .filter((m) => m.is_lider)
               .map((m) => obterApelidoFrente(m.profile))
@@ -604,7 +646,12 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack }) => {
                 }}
                 right={
                   <span className="flex items-center gap-1.5 text-xs text-muted">
-                    {fm.length > 0 && <Tag tone="green">{fm.length}</Tag>}
+                    {funcasCountMap[f.id] > 0 && (
+                      <Tag tone="alert">
+                        {funcasCountMap[f.id]} {funcasCountMap[f.id] === 1 ? 'funça' : 'funças'}
+                      </Tag>
+                    )}
+                    {fm.length > 0 && <Tag tone="green">{fm.length} {fm.length === 1 ? 'membro' : 'membros'}</Tag>}
                     <span className="text-muted">›</span>
                   </span>
                 }
