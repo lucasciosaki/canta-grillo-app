@@ -120,6 +120,23 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({
     carregarDados();
   }, [carregarDados]);
 
+  // Realtime para contagem de funças e alterações em membros
+  useEffect(() => {
+    const channel = supabase
+      .channel('frentes-funcas-channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () => {
+        carregarDados();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () => {
+        carregarDados();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [carregarDados]);
+
   // Frentes visíveis para o usuário autenticado
   const frentesVisiveis = filtrarFrentesVisiveis(
     frentes,
@@ -344,6 +361,9 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({
                 ? () => onOpenFuncasDaFrente(frenteSelecionada.id)
                 : undefined
             }
+            todasFrentes={frentes}
+            todosMembros={membros}
+            todosMoradores={todosMoradores}
           />
         )}
 

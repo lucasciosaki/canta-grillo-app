@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../../lib/supabaseClient';
 import { useAuth } from '../../../contexts/AuthContext';
-import type { Front, FrontMember, FuncaFrente } from '../../../types/frentes';
+import type { Front, FrontMember, FuncaFrente, FuncaAtribuicao } from '../../../types/frentes';
+import type { Profile } from '../../../types/auth';
 import {
   obterApelidoFrente,
   filtrarFuncasPendentesDaFrente,
@@ -17,7 +18,9 @@ import {
   ChevronDown,
   ChevronUp,
   AlertCircle,
+  Trash2,
 } from 'lucide-react';
+import { NovaFuncaModal } from '../../funcas/NovaFuncaModal';
 
 interface FrentePainelTabProps {
   frente: Front;
@@ -26,6 +29,9 @@ interface FrentePainelTabProps {
   isLider: boolean;
   isMembro: boolean;
   onOpenFuncasGeral?: () => void;
+  todasFrentes?: Front[];
+  todosMembros?: FrontMember[];
+  todosMoradores?: Profile[];
 }
 
 export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
@@ -35,6 +41,9 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
   isLider,
   isMembro,
   onOpenFuncasGeral,
+  todasFrentes = [],
+  todosMembros = [],
+  todosMoradores = [],
 }) => {
   const { user } = useAuth();
   const [funcas, setFuncas] = useState<FuncaFrente[]>([]);
@@ -51,27 +60,82 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
 
   const carregarFuncas = useCallback(async () => {
     try {
+      setLoading(true);
+
+      // 1. Busca todas as funças desta frente sem embeds ambíguos
       const { data: funcasData, error: funcasError } = await supabase
         .from('funcas')
-        .select(`
-          *,
-          relator:profiles!funcas_relator_id_fkey(id, nome, apelido),
-          atribuicoes:funca_atribuicoes(
-            funca_id,
-            morador_id,
-            tipo_atribuicao,
-            atribuido_em,
-            morador:profiles(id, nome, apelido, geracao)
-          )
-        `)
+        .select('*')
         .eq('frente_id', frente.id)
         .order('created_at', { ascending: false });
 
-      if (!funcasError && funcasData) {
-        setFuncas(funcasData as unknown as FuncaFrente[]);
+      if (funcasError) {
+        console.error('[FrentePainelTab] Erro ao carregar funças da frente:', funcasError);
+        setFuncas([]);
+        return;
       }
+
+      if (!funcasData || funcasData.length === 0) {
+        setFuncas([]);
+        return;
+      }
+
+      const funcaIds = funcasData.map((f: any) => f.id);
+
+      // 2. Busca atribuições dessas funças
+      const { data: atribData, error: atribError } = await supabase
+        .from('funca_atribuicoes')
+        .select('*')
+        .in('funca_id', funcaIds);
+
+      if (atribError) {
+        console.error('[FrentePainelTab] Erro ao carregar atribuições:', atribError);
+      }
+
+      // 3. Coleta os perfis envolvidos (relatores e responsáveis)
+      const userIds = new Set<string>();
+      funcasData.forEach((f: any) => {
+        if (f.relator_id) userIds.add(f.relator_id);
+      });
+      atribData?.forEach((a: any) => {
+        if (a.morador_id) userIds.add(a.morador_id);
+        if (a.atribuido_por) userIds.add(a.atribuido_por);
+      });
+
+      const profilesMap = new Map<string, any>();
+      if (userIds.size > 0) {
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, nome, apelido, geracao')
+          .in('id', Array.from(userIds));
+
+        if (!profilesError && profilesData) {
+          profilesData.forEach((p: any) => profilesMap.set(p.id, p));
+        }
+      }
+
+      // 4. Mapeia atribuições para cada funca_id
+      const atribMap = new Map<string, FuncaAtribuicao[]>();
+      atribData?.forEach((a: any) => {
+        const list = atribMap.get(a.funca_id) || [];
+        list.push({
+          ...a,
+          morador: profilesMap.get(a.morador_id) || null,
+        });
+        atribMap.set(a.funca_id, list);
+      });
+
+      // 5. Monta a lista completa
+      const formatadas: FuncaFrente[] = funcasData.map((f: any) => ({
+        ...f,
+        relator: profilesMap.get(f.relator_id) || null,
+        atribuicoes: atribMap.get(f.id) || [],
+      }));
+
+      setFuncas(formatadas);
     } catch (err) {
-      console.error('[FrentePainelTab] Erro ao carregar funças:', err);
+      console.error('[FrentePainelTab] Erro inesperado ao carregar funças:', err);
+      setFuncas([]);
     } finally {
       setLoading(false);
     }
@@ -87,7 +151,7 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
       .channel(`frente-funcas-${frente.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'funcas', filter: `frente_id=eq.${frente.id}` },
+        { event: '*', schema: 'public', table: 'funcas' },
         () => carregarFuncas()
       )
       .on(
@@ -105,7 +169,7 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
   const funcasPendentes = filtrarFuncasPendentesDaFrente(funcas, frente.id);
   const funcasConcluidas = funcas.filter((f) => f.status === 'concluida');
 
-  const handleCriarFunca = async (e: React.FormEvent) => {
+  const handleCriarFuncaSimples = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.id || !novoTitulo.trim() || !novaDescricao.trim()) return;
 
@@ -194,7 +258,45 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
     }
   };
 
-  const handleMudarStatus = async (funcaId: string, novoStatus: 'aberta' | 'em_andamento' | 'concluida') => {
+  const handleRemoverAtribuicao = async (funcaId: string, moradorId: string) => {
+    if (!confirm('Deseja desatribuir este morador desta funça?')) return;
+    setSalvando(true);
+    try {
+      const { error } = await supabase
+        .from('funca_atribuicoes')
+        .delete()
+        .eq('funca_id', funcaId)
+        .eq('morador_id', moradorId);
+
+      if (error) {
+        alert('Erro ao desatribuir morador: ' + error.message);
+      } else {
+        await carregarFuncas();
+      }
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const handleExcluirFunca = async (funcaId: string) => {
+    if (!confirm('Deseja realmente excluir esta funça da frente?')) return;
+    setSalvando(true);
+    try {
+      const { error } = await supabase.from('funcas').delete().eq('id', funcaId);
+      if (error) {
+        alert('Erro ao excluir funça: ' + error.message);
+      } else {
+        await carregarFuncas();
+      }
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const handleMudarStatus = async (
+    funcaId: string,
+    novoStatus: 'aberta' | 'em_andamento' | 'concluida'
+  ) => {
     setSalvando(true);
     try {
       const { error } = await supabase
@@ -211,6 +313,8 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
       setSalvando(false);
     }
   };
+
+  const usarModalCompleto = todosMoradores.length > 0;
 
   return (
     <div className="space-y-6">
@@ -254,6 +358,8 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
             const membrosDisponiveisParaAtribuicao = membros.filter(
               (m) => !f.atribuicoes?.some((a) => a.morador_id === m.profile_id)
             );
+            const podeExcluir =
+              isAdmin || isLider || (user?.id && f.relator_id === user.id);
 
             return (
               <div
@@ -261,8 +367,8 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
                 className="p-4 rounded-xl border border-line bg-surface space-y-3 shadow-2xs hover:border-muted transition-colors"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
                       <Tag tone={f.status === 'em_andamento' ? 'green' : 'alert'}>
                         {f.status === 'em_andamento' ? 'Em andamento' : 'Aberta'}
                       </Tag>
@@ -272,24 +378,65 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
                           Prazo: {f.prazo.split('-').reverse().join('/')}
                         </span>
                       )}
+                      {f.relator && (
+                        <span className="text-[11px] text-muted/80">
+                          · Aberta por {obterApelidoFrente(f.relator)}
+                        </span>
+                      )}
                     </div>
                     <h4 className="text-sm font-semibold text-ink leading-snug">{f.titulo}</h4>
                     <p className="text-xs text-muted mt-1 leading-relaxed whitespace-pre-wrap">{f.descricao}</p>
+                    {f.foto_url && (
+                      <div className="mt-2.5">
+                        <img
+                          src={f.foto_url}
+                          alt={f.titulo}
+                          className="max-h-48 w-auto rounded-lg border border-line object-cover"
+                        />
+                      </div>
+                    )}
                   </div>
+
+                  {podeExcluir && (
+                    <button
+                      type="button"
+                      onClick={() => handleExcluirFunca(f.id)}
+                      disabled={salvando}
+                      title="Excluir funça"
+                      className="p-1.5 text-muted hover:text-clay rounded-md transition-colors shrink-0"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Responsáveis atribuídos */}
                 <div className="pt-1 border-t border-line/60 flex flex-wrap items-center gap-1.5 text-xs text-muted">
                   <span className="text-[11px] font-medium text-muted/80">Responsáveis:</span>
                   {f.atribuicoes && f.atribuicoes.length > 0 ? (
-                    f.atribuicoes.map((a) => (
-                      <span
-                        key={a.morador_id}
-                        className="px-2 py-0.5 rounded-md bg-paper border border-line text-ink font-medium text-[11px]"
-                      >
-                        {obterApelidoFrente(a.morador)}
-                      </span>
-                    ))
+                    f.atribuicoes.map((a) => {
+                      const podeRemover =
+                        isAdmin || isLider || (user?.id && a.morador_id === user.id);
+                      return (
+                        <span
+                          key={a.morador_id}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-paper border border-line text-ink font-medium text-[11px]"
+                        >
+                          {obterApelidoFrente(a.morador)}
+                          {podeRemover && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoverAtribuicao(f.id, a.morador_id)}
+                              disabled={salvando}
+                              className="text-muted hover:text-clay ml-0.5"
+                              title="Desatribuir"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </span>
+                      );
+                    })
                   ) : (
                     <span className="text-clay text-[11px] font-medium italic">Sem responsável</span>
                   )}
@@ -404,8 +551,21 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
         </div>
       )}
 
-      {/* Modal de Nova Funça na Frente */}
-      {modalNovaFunca && (
+      {/* Modal de Nova Funça: Completo ou Simples */}
+      {modalNovaFunca && usarModalCompleto ? (
+        <NovaFuncaModal
+          isOpen={modalNovaFunca}
+          onClose={() => setModalNovaFunca(false)}
+          onSuccess={() => {
+            setModalNovaFunca(false);
+            carregarFuncas();
+          }}
+          frentes={todasFrentes.length > 0 ? todasFrentes : [frente]}
+          membrosFrentes={todosMembros.length > 0 ? todosMembros : membros}
+          todosMoradores={todosMoradores}
+          initialFrontId={frente.id}
+        />
+      ) : modalNovaFunca ? (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-sm bg-paper border border-line rounded-2xl p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-line pb-3">
@@ -426,7 +586,7 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
               </div>
             )}
 
-            <form onSubmit={handleCriarFunca} className="space-y-3.5">
+            <form onSubmit={handleCriarFuncaSimples} className="space-y-3.5">
               <div>
                 <label className="block text-xs font-medium text-muted mb-1">Título da tarefa *</label>
                 <input
@@ -477,7 +637,7 @@ export const FrentePainelTab: React.FC<FrentePainelTabProps> = ({
             </form>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 };
