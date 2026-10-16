@@ -45,15 +45,49 @@ export interface TarefaDiariaItem {
   isFiscal: boolean; // true se for a área do Halls
 }
 
+export interface RegraPontoItem {
+  pontos: number; // 2 a 7
+  descricao: string;
+}
+
 export interface QuadroSemanalConsolidado {
   semana_ano: number;
   ano: number;
   penalidade_semana: string;
+  regras_pontos?: RegraPontoItem[];
   quarto_fiscal_id: string | null;
   quarto_fiscal_nome: string | null;
   itens: EscalaSemanalItem[];
   tarefas_hoje: TarefaDiariaItem[];
   precisa_inicializacao: boolean;
+}
+
+/** Regras Padrão de 2 a 7 Pontos do Quadro de Faxina da Canta Grillo */
+export const REGRAS_PONTOS_PADRAO: RegraPontoItem[] = [
+  { pontos: 2, descricao: 'Pagar 1 caixa de cerveja para a casa' },
+  { pontos: 3, descricao: 'Pagar 2 caixas de cerveja para a casa' },
+  { pontos: 4, descricao: 'Lavar a cozinha no domingo + 2 caixas' },
+  { pontos: 5, descricao: 'Faxina geral da área externa + 3 caixas' },
+  { pontos: 6, descricao: 'Faxina pesada da república inteira' },
+  { pontos: 7, descricao: 'Pena máxima: Churrasco por conta do quarto' },
+];
+
+/**
+ * Obtém a penalidade aplicável conforme os pontos acumulados (2 a 7).
+ * Se faltas < 2, retorna null.
+ * Se faltas >= 2, busca a regra exata correspondente ou a maior regra disponível.
+ */
+export function obterRegraPorPontos(
+  faltas: number,
+  regras: RegraPontoItem[] = REGRAS_PONTOS_PADRAO
+): RegraPontoItem | null {
+  if (faltas < 2) return null;
+  const lista = (regras && regras.length > 0) ? regras : REGRAS_PONTOS_PADRAO;
+  const pontosClamped = Math.min(faltas, 7);
+  const regraExata = lista.find((r) => r.pontos === pontosClamped);
+  if (regraExata) return regraExata;
+  const aplicaveis = lista.filter((r) => r.pontos <= faltas).sort((a, b) => b.pontos - a.pontos);
+  return aplicaveis[0] || null;
 }
 
 /** 6 Funções Oficiais da Canta Grillo na ordem de rodízio */

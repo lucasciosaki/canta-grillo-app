@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { FaxinaService } from './services/faxinaService.ts';
 import { createUserClient, db, runWithClient } from './db.ts';
+import { REGRAS_PONTOS_PADRAO } from '../../src/types/faxina.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -137,14 +138,47 @@ app.get('/api/faxina/dados-iniciais', async (_req, res) => {
   }
 });
 
+// Buscar Regras de Penalidades (2 a 7 Pontos)
+app.get('/api/faxina/regras', async (_req, res) => {
+  try {
+    const { data: regrasDb } = await db()
+      .from('regras_quadro_pontos')
+      .select('pontos, descricao')
+      .order('pontos');
+
+    const regras = (regrasDb && regrasDb.length > 0) ? regrasDb : REGRAS_PONTOS_PADRAO;
+    res.json({ regras });
+  } catch (error: any) {
+    console.error('[API /api/faxina/regras] Erro:', error);
+    res.json({ regras: REGRAS_PONTOS_PADRAO });
+  }
+});
+
+// Configurar Regras de Penalidades (2 a 7 Pontos) - Admin
+app.post('/api/faxina/regras', requireAdmin, async (req, res) => {
+  try {
+    const { regras } = req.body;
+    if (!regras || !Array.isArray(regras)) {
+      return res.status(400).json({ error: 'Array de regras inválido.' });
+    }
+    const profile = res.locals.profile;
+    const salvas = await FaxinaService.salvarRegrasPontos(regras, profile?.id);
+    res.json({ success: true, regras: salvas });
+  } catch (error: any) {
+    console.error('[API POST /api/faxina/regras] Erro:', error);
+    res.status(500).json({ error: error.message || 'Erro ao salvar regras' });
+  }
+});
+
 // Inicialização da Escala da Casa (Admin)
 app.post('/api/faxina/inicializar', requireAdmin, async (req, res) => {
   try {
-    const { atribuicoes, penalidade } = req.body;
+    const { atribuicoes, penalidade, regras_pontos } = req.body;
     if (!atribuicoes || atribuicoes.length < 6) {
       return res.status(400).json({ error: 'É necessário atribuir os 6 quartos às 6 funções.' });
     }
-    await FaxinaService.inicializarEscala(atribuicoes, penalidade);
+    const profile = res.locals.profile;
+    await FaxinaService.inicializarEscala(atribuicoes, penalidade, regras_pontos, profile?.id);
     const quadro = await FaxinaService.obterQuadroConsolidado();
     res.json({ success: true, quadro });
   } catch (error: any) {

@@ -194,13 +194,28 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - **Reprovação Expressa:** Se o fiscal reprovar o serviço, o quarto avaliado toma imediatamente 1 falta na escala da semana.
   - **Auditoria das 11:00 BRT & Omissão:** O fiscal tem até as 11:00 da manhã seguinte para avaliar todas as funções concluídas. Se o fiscal deixar funções sem parecer, a rotina marca `omitido` e o quarto do **Halls toma no máximo 1 falta por omissão no dia**. Além disso, se o quarto do Halls **já tiver tomado falta às 01:00 por não ter tirado a foto do próprio Hall, ele não toma uma segunda falta por omissão de fiscalização no mesmo dia**.
 
-### RN06 - Penalidades de Quarto por Faltas Semanais (≥ 2 Faltas) e Políticas RLS da Faxina
-- Se um quarto acumular **2 ou mais faltas/pontos na mesma semana**, o sistema aciona a penalidade coletiva para os integrantes daquele quarto.
-- O texto e a descrição da penalidade semanal (ex.: *"Pagar 1 caixa de cerveja para a casa"*) são configuráveis a qualquer momento pelo Administrador da república via painel.
-- O Quadro de Pontos digital destaca em vermelho e com alerta visual pulsante os quartos que atingiram a marca de 2 ou mais faltas na semana vigente.
+### RN06 - Penalidades Progressivas do Quadro de Pontos (2 a 7 Faltas) e Políticas RLS da Faxina
+- **Escalada Progressiva de Penalidades (2 a 7 Faltas):**
+  - O sistema implementa uma tabela progressiva de punições configuráveis de **2 a 7 faltas acumuladas na mesma semana**.
+  - Quartos com 0 ou 1 falta estão livres de penalidades.
+  - A partir de 2 faltas, o quarto recebe a penalidade exata do nível acumulado no Quadro de Pontos:
+    - **2 Faltas:** Penalidade inicial (Padrão: *Pagar 1 caixa de cerveja para a casa*).
+    - **3 Faltas:** Segundo patamar (Padrão: *Pagar 2 caixas de cerveja para a casa*).
+    - **4 Faltas:** Terceiro patamar (Padrão: *Lavar a cozinha no domingo + 2 caixas*).
+    - **5 Faltas:** Quarto patamar (Padrão: *Faxina geral da área externa + 3 caixas*).
+    - **6 Faltas:** Quinto patamar (Padrão: *Faxina pesada da república inteira*).
+    - **7 Faltas:** Pena máxima (Padrão: *Churrasco por conta do quarto*).
+  - Caso um quarto ultrapasse 7 faltas, mantém-se a penalidade máxima estabelecida para o nível 7.
+- **Painel de Configuração do Administrador:**
+  - O Administrador da república pode visualizar e editar as descrições de todas as 6 regras (níveis 2 a 7) diretamente na aba dedicada do modal de administração.
+  - As regras são persistidas na tabela `public.regras_quadro_pontos` e sincronizadas em tempo real via Supabase Realtime.
+- **Exibição na Interface:**
+  - Na aba "Quadro Geral", exibe-se um card expansível/recolhível com a lista dos 7 níveis de punição.
+  - No card de cada quarto com $\ge 2$ faltas, exibe-se em destaque a punição específica correspondente ao total de faltas do quarto.
 - **Governança e Políticas RLS (Database-First):**
-  - **`areas_comuns`**: Leitura permitida para todos os autenticados (`SELECT`). Inserção e atualização permitidas para Administradores e moradores ativos (`public.is_admin() OR public.is_active_morador()`) para garantir semeadura das 6 funções.
-  - **`escala_semanal_faxina`**: Leitura pública para autenticados (`SELECT`). Gestão e inicialização permitidas para Administradores e moradores ativos (`ALL`), garantindo flexibilidade e redundância mesmo se o serviço backend estiver em reinicialização.
+  - **`regras_quadro_pontos`**: Chave primária `pontos INT CHECK (pontos BETWEEN 2 AND 7)`. Leitura pública para todos (`SELECT TO anon, authenticated USING (true)`). Inserção e atualização permitidas para Administradores e moradores ativos (`ALL TO authenticated USING (is_admin() OR is_active_morador())`).
+  - **`areas_comuns`**: Leitura permitida para todos os autenticados (`SELECT`). Inserção e atualização permitidas para Administradores e moradores ativos (`public.is_admin() OR public.is_active_morador()`).
+  - **`escala_semanal_faxina`**: Leitura pública para autenticados (`SELECT`). Gestão e inicialização permitidas para Administradores e moradores ativos (`ALL`).
   - **`registro_diario_faxina`**: Leitura aberta para autenticados (`SELECT`). Inserção de foto e avaliação de fiscalização permitidas para Administradores e moradores ativos (`ALL`).
   - **Identificação Estrita por Apelido:** Todas as referências visuais aos moradores e administradores na interface e no histórico de avaliações exibem estritamente o **apelido** cadastrado.
 

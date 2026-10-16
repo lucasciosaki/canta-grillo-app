@@ -109,6 +109,25 @@ CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
     CONSTRAINT unique_escala_dia UNIQUE (quarto_id, area_comum_id, semana_ano, ano, data)
 );
 
+-- 8.1 REGRAS DE PENALIDADES DO QUADRO DE PONTOS (Configuração Progressiva de 2 a 7 Pontos)
+CREATE TABLE IF NOT EXISTS public.regras_quadro_pontos (
+    pontos INT PRIMARY KEY CHECK (pontos BETWEEN 2 AND 7),
+    descricao TEXT NOT NULL,
+    atualizado_por UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    atualizado_em TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Seed de Regras Padrão de 2 a 7 Pontos
+INSERT INTO public.regras_quadro_pontos (pontos, descricao)
+VALUES
+    (2, 'Pagar 1 caixa de cerveja para a casa'),
+    (3, 'Pagar 2 caixas de cerveja para a casa'),
+    (4, 'Lavar a cozinha no domingo + 2 caixas'),
+    (5, 'Faxina geral da área externa + 3 caixas'),
+    (6, 'Faxina pesada da república inteira'),
+    (7, 'Pena máxima: Churrasco por conta do quarto')
+ON CONFLICT (pontos) DO NOTHING;
+
 -- 9. PONTOS DE BAGUNÇA (Pontos Individuais com Foto e Chat)
 CREATE TABLE IF NOT EXISTS public.pontos_bagunca (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -827,5 +846,33 @@ ON public.registro_diario_faxina FOR ALL
 TO authenticated
 USING (public.is_admin() OR public.is_active_morador())
 WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+-- REGRAS DO QUADRO DE PONTOS (2 a 7 Pontos): RLS e Realtime
+ALTER TABLE public.regras_quadro_pontos ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Todos podem ler regras do quadro de pontos" ON public.regras_quadro_pontos;
+CREATE POLICY "Todos podem ler regras do quadro de pontos"
+ON public.regras_quadro_pontos FOR SELECT
+TO anon, authenticated
+USING (true);
+
+DROP POLICY IF EXISTS "Admin ou morador gerencia regras de pontos" ON public.regras_quadro_pontos;
+CREATE POLICY "Admin ou morador gerencia regras de pontos"
+ON public.regras_quadro_pontos FOR ALL
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+-- Habilita Realtime na tabela regras_quadro_pontos
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'regras_quadro_pontos'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.regras_quadro_pontos;
+  END IF;
+END $$;
+
 
 

@@ -7,8 +7,13 @@ import type {
   TarefaDiariaItem,
   Quarto,
   AreaComum,
+  RegraPontoItem,
 } from '../../types/faxina';
-import { getIsoWeekAndYear } from '../../types/faxina';
+import {
+  getIsoWeekAndYear,
+  REGRAS_PONTOS_PADRAO,
+  obterRegraPorPontos,
+} from '../../types/faxina';
 import {
   ShieldCheck,
   Camera,
@@ -27,6 +32,9 @@ import {
   Settings,
   X,
   Wand2,
+  ChevronDown,
+  ChevronUp,
+  Scale,
 } from 'lucide-react';
 
 interface QuadroPontosScreenProps {
@@ -140,12 +148,25 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
 
   // Estados de Administração
   const [modalAdminOpen, setModalAdminOpen] = useState(false);
+  const [modalAdminTab, setModalAdminTab] = useState<'escala' | 'regras'>('escala');
   const [loadingDadosIniciais, setLoadingDadosIniciais] = useState(false);
   const [dadosIniciais, setDadosIniciais] = useState<{ rooms: Quarto[]; areas: AreaComum[] } | null>(null);
   const [atribuicoesForm, setAtribuicoesForm] = useState<{ [areaId: string]: string }>({});
   const [penalidadeForm, setPenalidadeForm] = useState('Pagar 1 caixa de cerveja para a casa');
   const [salvandoEscala, setSalvandoEscala] = useState(false);
   const [adminAcaoMsg, setAdminAcaoMsg] = useState<string | null>(null);
+
+  // Estados de Regras de Penalidades (2 a 7 Pontos)
+  const [regrasPontos, setRegrasPontos] = useState<RegraPontoItem[]>(REGRAS_PONTOS_PADRAO);
+  const [regrasForm, setRegrasForm] = useState<{ [pontos: number]: string }>(() => {
+    const initial: { [p: number]: string } = {};
+    REGRAS_PONTOS_PADRAO.forEach((r) => {
+      initial[r.pontos] = r.descricao;
+    });
+    return initial;
+  });
+  const [regrasExpandidas, setRegrasExpandidas] = useState(false);
+  const [salvandoRegras, setSalvandoRegras] = useState(false);
 
   // Fetch autenticado com Bearer Token do Supabase
   const apiFetch = useCallback(
@@ -259,6 +280,15 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           const data: QuadroSemanalConsolidado = await res.json();
           setQuadro(data);
 
+          if (data.regras_pontos && data.regras_pontos.length > 0) {
+            setRegrasPontos(data.regras_pontos);
+            const formMap: { [p: number]: string } = {};
+            data.regras_pontos.forEach((r) => {
+              formMap[r.pontos] = r.descricao;
+            });
+            setRegrasForm((prev) => ({ ...prev, ...formMap }));
+          }
+
           if (data.precisa_inicializacao && isAdmin) {
             carregarDadosIniciais();
           }
@@ -288,6 +318,27 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       const itens = (itensDb as any[]) || [];
       const precisa_inicializacao = itens.length === 0;
 
+      // Busca regras configuradas de 2 a 7 pontos
+      let regrasCarregadas = REGRAS_PONTOS_PADRAO;
+      try {
+        const { data: regrasDb } = await supabase
+          .from('regras_quadro_pontos')
+          .select('pontos, descricao')
+          .order('pontos');
+
+        if (regrasDb && regrasDb.length > 0) {
+          regrasCarregadas = regrasDb as RegraPontoItem[];
+          setRegrasPontos(regrasCarregadas);
+          const formMap: { [p: number]: string } = {};
+          regrasCarregadas.forEach((r) => {
+            formMap[r.pontos] = r.descricao;
+          });
+          setRegrasForm((prev) => ({ ...prev, ...formMap }));
+        }
+      } catch {
+        // Fallback para REGRAS_PONTOS_PADRAO
+      }
+
       // Busca registros de hoje
       const hojeStr = new Date().toISOString().split('T')[0];
       const { data: tarefasDb } = await supabase
@@ -314,6 +365,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         semana_ano,
         ano,
         penalidade_semana: itens[0]?.penalidade_atribuida || 'Pagar 1 caixa de cerveja para a casa',
+        regras_pontos: regrasCarregadas,
         quarto_fiscal_id: itemFiscal?.quarto_id || null,
         quarto_fiscal_nome: itemFiscal?.quarto?.nome || null,
         itens,
@@ -352,6 +404,11 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'escala_semanal_faxina' },
+        () => carregarQuadro()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'regras_quadro_pontos' },
         () => carregarQuadro()
       )
       .subscribe();
@@ -480,6 +537,11 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         return;
       }
 
+      const regrasParaSalvar: RegraPontoItem[] = [2, 3, 4, 5, 6, 7].map((pts) => ({
+        pontos: pts,
+        descricao: (regrasForm[pts] || '').trim() || (REGRAS_PONTOS_PADRAO.find((r) => r.pontos === pts)?.descricao ?? ''),
+      }));
+
       // 1. Tenta salvar via API Backend
       let salvoComSucesso = false;
       try {
@@ -488,6 +550,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           body: JSON.stringify({
             atribuicoes,
             penalidade: penalidadeForm,
+            regras_pontos: regrasParaSalvar,
           }),
         });
 
@@ -525,6 +588,19 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         if (insErr) {
           throw new Error(`Erro ao salvar no banco: ${insErr.message}`);
         }
+
+        // Tenta salvar regras no Supabase
+        try {
+          const regrasRows = regrasParaSalvar.map((r) => ({
+            pontos: r.pontos,
+            descricao: r.descricao,
+            atualizado_por: user?.id,
+            atualizado_em: new Date().toISOString(),
+          }));
+          await supabase.from('regras_quadro_pontos').upsert(regrasRows, { onConflict: 'pontos' });
+        } catch {
+          // Ignora se tabela ainda não tiver sido criada pelo SQL script
+        }
       }
 
       setModalAdminOpen(false);
@@ -535,6 +611,64 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     } finally {
       setSalvandoEscala(false);
     }
+  };
+
+  // Salvar Regras de Penalidades (2 a 7 Pontos) - Admin
+  const handleSalvarRegras = async () => {
+    try {
+      setSalvandoRegras(true);
+      const novasRegras: RegraPontoItem[] = [2, 3, 4, 5, 6, 7].map((pts) => ({
+        pontos: pts,
+        descricao: (regrasForm[pts] || '').trim() || (REGRAS_PONTOS_PADRAO.find((r) => r.pontos === pts)?.descricao ?? ''),
+      }));
+
+      // 1. Tenta API Backend
+      let salvoComSucesso = false;
+      try {
+        const res = await apiFetch('/api/faxina/regras', {
+          method: 'POST',
+          body: JSON.stringify({ regras: novasRegras }),
+        });
+        if (res.ok) {
+          salvoComSucesso = true;
+        }
+      } catch (apiErr) {
+        console.warn('[QuadroPontosScreen] Backend falhou ao salvar regras, tentando Supabase direto...', apiErr);
+      }
+
+      // 2. Fallback direto no Supabase
+      if (!salvoComSucesso) {
+        const rows = novasRegras.map((r) => ({
+          pontos: r.pontos,
+          descricao: r.descricao,
+          atualizado_por: user?.id,
+          atualizado_em: new Date().toISOString(),
+        }));
+        const { error: insErr } = await supabase
+          .from('regras_quadro_pontos')
+          .upsert(rows, { onConflict: 'pontos' });
+        if (insErr) {
+          throw new Error(`Erro ao salvar regras no banco: ${insErr.message}`);
+        }
+      }
+
+      setRegrasPontos(novasRegras);
+      await carregarQuadro();
+      alert('Regras de penalidades de 2 a 7 pontos salvas com sucesso!');
+    } catch (err: any) {
+      alert(err.message || 'Erro ao salvar regras de pontos.');
+    } finally {
+      setSalvandoRegras(false);
+    }
+  };
+
+  // Restaurar Regras Padrão (2 a 7 Pontos)
+  const handleRestaurarRegrasPadrao = () => {
+    const padrao: { [p: number]: string } = {};
+    REGRAS_PONTOS_PADRAO.forEach((r) => {
+      padrao[r.pontos] = r.descricao;
+    });
+    setRegrasForm(padrao);
   };
 
   // Disparos Administrativos de Teste
@@ -604,17 +738,109 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         </div>
       )}
 
-      {/* Alerta de Penalidade da Semana */}
-      <div className="mb-4 p-3.5 rounded-2xl bg-cream/80 border border-line flex items-center justify-between text-xs">
-        <div>
-          <span className="text-muted block text-[11px] uppercase tracking-wider font-semibold">
-            Penalidade Semanal (≥ 2 faltas):
-          </span>
-          <span className="font-semibold text-ink mt-0.5 block">
-            {quadro?.penalidade_semana || 'Pagar 1 caixa de cerveja para a casa'}
-          </span>
+      {/* Card de Regras Progressivas de Penalidades (2 a 7 Pontos) */}
+      <div className="mb-4 rounded-2xl bg-surface border border-line p-3.5 shadow-2xs">
+        <div
+          className="flex items-center justify-between cursor-pointer select-none"
+          onClick={() => setRegrasExpandidas((prev) => !prev)}
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-cream border border-line flex items-center justify-center text-forest shrink-0">
+              <Scale className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-ink">Regras do Quadro de Pontos</span>
+                <Tag tone="alert">2 a 7 Faltas</Tag>
+              </div>
+              <p className="text-[11px] text-muted">
+                Penalidades progressivas acumuladas na semana
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {podeAcessarAdmin && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setModalAdminTab('regras');
+                  setModalAdminOpen(true);
+                }}
+                className="px-2 py-1 rounded-md text-[11px] font-semibold text-forest bg-mint/50 border border-forest/20 hover:bg-mint transition-colors"
+              >
+                Editar Regras
+              </button>
+            )}
+            <button
+              type="button"
+              className="p-1 rounded-lg text-muted hover:text-ink transition-colors"
+              aria-label={regrasExpandidas ? 'Recolher regras' : 'Expandir regras'}
+            >
+              {regrasExpandidas ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </button>
+          </div>
         </div>
-        <Tag tone="alert">Regra 2 Faltas</Tag>
+
+        {/* Resumo compacto quando recolhido */}
+        {!regrasExpandidas && (
+          <div className="mt-2.5 pt-2.5 border-t border-line/60 flex items-center justify-between text-xs text-muted">
+            <span className="truncate pr-2">
+              <strong className="text-ink">2 faltas:</strong>{' '}
+              {regrasPontos.find((r) => r.pontos === 2)?.descricao || '1 caixa de cerveja'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setRegrasExpandidas(true)}
+              className="text-[11px] text-forest font-semibold hover:underline shrink-0"
+            >
+              Ver todos os 7 níveis
+            </button>
+          </div>
+        )}
+
+        {/* Tabela de 2 a 7 pontos quando expandido */}
+        {regrasExpandidas && (
+          <div className="mt-3 pt-3 border-t border-line/60 space-y-2">
+            {regrasPontos.map((regra) => (
+              <div
+                key={regra.pontos}
+                className="flex items-center justify-between gap-3 p-2 rounded-xl bg-cream/40 border border-line text-xs"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-lg bg-clay-tint text-clay border border-clay/30 flex items-center justify-center font-bold text-xs shrink-0">
+                    {regra.pontos}
+                  </span>
+                  <span className="font-semibold text-ink">
+                    {regra.pontos} {regra.pontos === 1 ? 'falta' : 'faltas'}
+                  </span>
+                </div>
+                <span className="text-right text-xs font-semibold text-ink">
+                  {regra.descricao}
+                </span>
+              </div>
+            ))}
+            {podeAcessarAdmin && (
+              <div className="pt-2 text-right">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setModalAdminTab('regras');
+                    setModalAdminOpen(true);
+                  }}
+                >
+                  <Settings className="w-3.5 h-3.5 mr-1 inline" />
+                  Configurar Regras de 2 a 7 Pontos
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Navegação entre Abas */}
@@ -696,6 +922,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
             const tarefa = quadro.tarefas_hoje.find((t) => t.quarto_id === item.quarto_id);
             const isFiscal = item.area_comum?.nome === 'Halls';
             const temPenalidade = item.pontos_faltas >= 2;
+            const regraAplicavel = obterRegraPorPontos(item.pontos_faltas, regrasPontos);
 
             return (
               <div
@@ -793,6 +1020,22 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                 {tarefa?.fiscal_status === 'reprovado' && tarefa.fiscal_observacao && (
                   <div className="mt-2 p-2 rounded-lg bg-surface text-[11px] text-clay border border-clay/20">
                     <strong>Motivo da reprovação:</strong> {tarefa.fiscal_observacao}
+                  </div>
+                )}
+
+                {/* Penalidade progressiva aplicada ao quarto caso tenha faltas >= 2 */}
+                {temPenalidade && (
+                  <div className="mt-2.5 p-2.5 rounded-xl bg-clay-tint/70 border border-clay/40 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-clay uppercase tracking-wider flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5 text-clay" />
+                        Penalidade ({item.pontos_faltas} {item.pontos_faltas === 1 ? 'falta' : 'faltas'})
+                      </span>
+                      <Tag tone="alert">{item.pontos_faltas} Faltas</Tag>
+                    </div>
+                    <p className="mt-1 text-xs font-bold text-ink leading-snug">
+                      {regraAplicavel?.descricao || item.penalidade_atribuida || quadro?.penalidade_semana}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1202,176 +1445,276 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
               </div>
             )}
 
-            {loadingDadosIniciais && !dadosIniciais ? (
-              <div className="py-12 text-center">
-                <div className="w-8 h-8 border-2 border-forest border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <p className="text-xs text-muted">Carregando quartos e funções da república...</p>
-              </div>
-            ) : (
+            {/* Abas do Modal Admin: Escala vs Regras */}
+            <div className="flex rounded-xl bg-cream border border-line p-1 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setModalAdminTab('escala')}
+                className={`flex-1 py-1.5 rounded-lg transition-colors text-center ${
+                  modalAdminTab === 'escala'
+                    ? 'bg-forest text-white font-semibold shadow-xs'
+                    : 'text-muted hover:text-ink'
+                }`}
+              >
+                Escala dos 6 Quartos
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalAdminTab('regras')}
+                className={`flex-1 py-1.5 rounded-lg transition-colors text-center ${
+                  modalAdminTab === 'regras'
+                    ? 'bg-forest text-white font-semibold shadow-xs'
+                    : 'text-muted hover:text-ink'
+                }`}
+              >
+                Regras (2 a 7 Pontos)
+              </button>
+            </div>
+
+            {/* ABA ADMIN 1: ESCALA DOS 6 QUARTOS */}
+            {modalAdminTab === 'escala' && (
+              <>
+                {loadingDadosIniciais && !dadosIniciais ? (
+                  <div className="py-12 text-center">
+                    <div className="w-8 h-8 border-2 border-forest border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                    <p className="text-xs text-muted">Carregando quartos e funções da república...</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4 pt-1">
+                    {/* Cabeçalho da Escala */}
+                    <div className="flex items-center justify-between gap-2 border-b border-line/60 pb-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-ink uppercase tracking-wider">
+                          Definir Escala dos 6 Quartos
+                        </h4>
+                        <p className="text-[11px] text-muted">
+                          Atribua 1 quarto para cada função. O Halls é o fiscal.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAtribuicaoRapida}
+                        className="flex items-center gap-1 text-[11px] font-semibold text-forest hover:text-forest-hover bg-mint/50 px-2 py-1 rounded-lg border border-forest/20 shrink-0 transition-colors"
+                        title="Preenche automaticamente 1 quarto para cada função"
+                      >
+                        <Wand2 className="w-3.5 h-3.5" />
+                        <span>Auto 1:1</span>
+                      </button>
+                    </div>
+
+                    {/* Lista das 6 Funções */}
+                    <div className="space-y-2.5">
+                      {(() => {
+                        const areasParaExibir: AreaComum[] =
+                          dadosIniciais?.areas && dadosIniciais.areas.length > 0
+                            ? dadosIniciais.areas
+                            : FUNCOES_CANONICAS.map((f, i) => ({
+                                id: `canonico-${i}`,
+                                nome: f.nome,
+                                descricao: f.descricao,
+                              }));
+
+                        const roomsParaExibir: Quarto[] =
+                          dadosIniciais?.rooms && dadosIniciais.rooms.length > 0
+                            ? dadosIniciais.rooms
+                            : QUARTOS_CANONICOS.map((q, i) => ({
+                                id: `quarto-canonico-${i}`,
+                                nome: q,
+                                capacidade: 4,
+                              }));
+
+                        return areasParaExibir.map((area) => {
+                          const isHalls = area.nome === 'Halls';
+                          const quartoSelecionado = atribuicoesForm[area.id] || '';
+
+                          return (
+                            <div
+                              key={area.id}
+                              className={`p-3 rounded-xl border transition-all ${
+                                isHalls
+                                  ? 'bg-mint/20 border-forest/30'
+                                  : 'bg-cream/30 border-line'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between text-xs mb-1.5">
+                                <div className="flex items-center gap-1.5 font-bold text-ink">
+                                  {getAreaIcon(area.nome)}
+                                  <span>{area.nome}</span>
+                                  {isHalls && (
+                                    <span className="px-1.5 py-0.2 rounded text-[10px] bg-forest text-white font-semibold">
+                                      Fiscal
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[11px] text-muted truncate max-w-[150px]">
+                                  {area.descricao}
+                                </span>
+                              </div>
+
+                              <select
+                                value={quartoSelecionado}
+                                onChange={(e) =>
+                                  setAtribuicoesForm((prev) => ({
+                                    ...prev,
+                                    [area.id]: e.target.value,
+                                  }))
+                                }
+                                className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-xs focus:outline-none focus:border-forest"
+                              >
+                                <option value="">Selecione o quarto responsável...</option>
+                                {roomsParaExibir.map((room) => (
+                                  <option key={room.id} value={room.id}>
+                                    {room.nome}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+
+                    {/* Status de Validação */}
+                    {(() => {
+                      const selecionados = Object.values(atribuicoesForm).filter(Boolean);
+                      const unicos = new Set(selecionados).size;
+                      const temDuplicidade = selecionados.length > unicos;
+
+                      return (
+                        <div className="space-y-1.5 pt-1">
+                          <div className="flex items-center justify-between text-xs px-1">
+                            <span className="text-muted">Quartos selecionados:</span>
+                            <span
+                              className={`font-bold ${
+                                unicos === 6 && !temDuplicidade
+                                  ? 'text-forest'
+                                  : 'text-amber-600'
+                              }`}
+                            >
+                              {unicos} de 6
+                            </span>
+                          </div>
+
+                          {temDuplicidade && (
+                            <div className="p-2.5 rounded-xl bg-clay-tint/50 border border-clay/30 text-clay text-xs flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>Cada quarto deve assumir apenas 1 função nesta semana.</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Penalidade Base da Semana */}
+                    <div className="pt-2">
+                      <label className="block text-xs font-semibold text-ink uppercase mb-1">
+                        Penalidade Base da Semana (≥ 2 Faltas):
+                      </label>
+                      <input
+                        type="text"
+                        value={penalidadeForm}
+                        onChange={(e) => setPenalidadeForm(e.target.value)}
+                        placeholder="Ex: Pagar 1 caixa de cerveja para a casa"
+                        className="w-full px-3 py-2 rounded-xl border border-line text-xs text-ink focus:outline-none focus:border-forest"
+                      />
+                    </div>
+
+                    <Button
+                      variant="primary"
+                      full
+                      disabled={salvandoEscala}
+                      onClick={handleSalvarInicializacao}
+                    >
+                      {salvandoEscala ? 'Salvando escala...' : 'Salvar e Iniciar Escala'}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Testes Manuais de Rotinas Backend */}
+                <div className="pt-4 border-t border-line space-y-2">
+                  <h4 className="text-xs font-bold text-ink uppercase tracking-wider">
+                    Simulações do Backend (Testes)
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant="outline" onClick={handleSimularCorte01h}>
+                      Simular Corte 01h
+                    </Button>
+                    <Button variant="outline" onClick={handleSimularAuditoria11h}>
+                      Simular Auditoria 11h
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ABA ADMIN 2: REGRAS DE 2 A 7 PONTOS */}
+            {modalAdminTab === 'regras' && (
               <div className="space-y-4 pt-1">
-                {/* Cabeçalho da Escala */}
-                <div className="flex items-center justify-between gap-2 border-b border-line/60 pb-2">
+                <div className="flex items-center justify-between border-b border-line/60 pb-2">
                   <div>
                     <h4 className="text-xs font-bold text-ink uppercase tracking-wider">
-                      Definir Escala dos 6 Quartos
+                      Regras de Penalidades (2 a 7 Faltas)
                     </h4>
                     <p className="text-[11px] text-muted">
-                      Atribua 1 quarto para cada função. O Halls é o fiscal.
+                      Defina a consequência acumulada para cada número de faltas da semana.
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={handleAtribuicaoRapida}
-                    className="flex items-center gap-1 text-[11px] font-semibold text-forest hover:text-forest-hover bg-mint/50 px-2 py-1 rounded-lg border border-forest/20 shrink-0 transition-colors"
-                    title="Preenche automaticamente 1 quarto para cada função"
+                    onClick={handleRestaurarRegrasPadrao}
+                    className="text-[11px] font-semibold text-forest hover:underline shrink-0"
                   >
-                    <Wand2 className="w-3.5 h-3.5" />
-                    <span>Auto 1:1</span>
+                    Restaurar Padrões
                   </button>
                 </div>
 
-                {/* Lista das 6 Funções */}
                 <div className="space-y-2.5">
-                  {(() => {
-                    const areasParaExibir: AreaComum[] =
-                      dadosIniciais?.areas && dadosIniciais.areas.length > 0
-                        ? dadosIniciais.areas
-                        : FUNCOES_CANONICAS.map((f, i) => ({
-                            id: `canonico-${i}`,
-                            nome: f.nome,
-                            descricao: f.descricao,
-                          }));
-
-                    const roomsParaExibir: Quarto[] =
-                      dadosIniciais?.rooms && dadosIniciais.rooms.length > 0
-                        ? dadosIniciais.rooms
-                        : QUARTOS_CANONICOS.map((q, i) => ({
-                            id: `quarto-canonico-${i}`,
-                            nome: q,
-                            capacidade: 4,
-                          }));
-
-                    return areasParaExibir.map((area) => {
-                      const isHalls = area.nome === 'Halls';
-                      const quartoSelecionado = atribuicoesForm[area.id] || '';
-
-                      return (
-                        <div
-                          key={area.id}
-                          className={`p-3 rounded-xl border transition-all ${
-                            isHalls
-                              ? 'bg-mint/20 border-forest/30'
-                              : 'bg-cream/30 border-line'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between text-xs mb-1.5">
-                            <div className="flex items-center gap-1.5 font-bold text-ink">
-                              {getAreaIcon(area.nome)}
-                              <span>{area.nome}</span>
-                              {isHalls && (
-                                <span className="px-1.5 py-0.2 rounded text-[10px] bg-forest text-white font-semibold">
-                                  Fiscal
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[11px] text-muted truncate max-w-[150px]">
-                              {area.descricao}
-                            </span>
-                          </div>
-
-                          <select
-                            value={quartoSelecionado}
-                            onChange={(e) =>
-                              setAtribuicoesForm((prev) => ({
-                                ...prev,
-                                [area.id]: e.target.value,
-                              }))
-                            }
-                            className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-xs focus:outline-none focus:border-forest"
-                          >
-                            <option value="">Selecione o quarto responsável...</option>
-                            {roomsParaExibir.map((room) => (
-                              <option key={room.id} value={room.id}>
-                                {room.nome}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-
-                {/* Status de Validação */}
-                {(() => {
-                  const selecionados = Object.values(atribuicoesForm).filter(Boolean);
-                  const unicos = new Set(selecionados).size;
-                  const temDuplicidade = selecionados.length > unicos;
-
-                  return (
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex items-center justify-between text-xs px-1">
-                        <span className="text-muted">Quartos selecionados:</span>
-                        <span
-                          className={`font-bold ${
-                            unicos === 6 && !temDuplicidade
-                              ? 'text-forest'
-                              : 'text-amber-600'
-                          }`}
-                        >
-                          {unicos} de 6
-                        </span>
+                  {[2, 3, 4, 5, 6, 7].map((pts) => (
+                    <div
+                      key={pts}
+                      className="p-3 rounded-xl bg-cream/30 border border-line space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-ink flex items-center gap-1.5">
+                          <span className="w-5 h-5 rounded-md bg-clay-tint text-clay border border-clay/30 flex items-center justify-center text-[11px] font-bold">
+                            {pts}
+                          </span>
+                          <span>{pts} {pts === 1 ? 'Falta' : 'Faltas'} no Quadro</span>
+                        </label>
+                        {pts === 2 && (
+                          <span className="text-[10px] text-muted font-medium">Início das penalidades</span>
+                        )}
+                        {pts === 7 && (
+                          <span className="text-[10px] text-clay font-bold">Pena máxima</span>
+                        )}
                       </div>
 
-                      {temDuplicidade && (
-                        <div className="p-2.5 rounded-xl bg-clay-tint/50 border border-clay/30 text-clay text-xs flex items-center gap-2">
-                          <AlertCircle className="w-4 h-4 shrink-0" />
-                          <span>Cada quarto deve assumir apenas 1 função nesta semana.</span>
-                        </div>
-                      )}
+                      <input
+                        type="text"
+                        value={regrasForm[pts] ?? ''}
+                        onChange={(e) =>
+                          setRegrasForm((prev) => ({
+                            ...prev,
+                            [pts]: e.target.value,
+                          }))
+                        }
+                        placeholder={`Penalidade para ${pts} faltas...`}
+                        className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-xs focus:outline-none focus:border-forest"
+                      />
                     </div>
-                  );
-                })()}
-
-                {/* Penalidade da Semana */}
-                <div className="pt-2">
-                  <label className="block text-xs font-semibold text-ink uppercase mb-1">
-                    Penalidade da Semana (≥ 2 Faltas):
-                  </label>
-                  <input
-                    type="text"
-                    value={penalidadeForm}
-                    onChange={(e) => setPenalidadeForm(e.target.value)}
-                    placeholder="Ex: Pagar 1 caixa de cerveja para a casa"
-                    className="w-full px-3 py-2 rounded-xl border border-line text-xs text-ink focus:outline-none focus:border-forest"
-                  />
+                  ))}
                 </div>
 
                 <Button
                   variant="primary"
                   full
-                  disabled={salvandoEscala}
-                  onClick={handleSalvarInicializacao}
+                  disabled={salvandoRegras}
+                  onClick={handleSalvarRegras}
                 >
-                  {salvandoEscala ? 'Salvando escala...' : 'Salvar e Iniciar Escala'}
+                  {salvandoRegras ? 'Salvando regras...' : 'Salvar Regras de 2 a 7 Pontos'}
                 </Button>
               </div>
             )}
-
-            {/* Testes Manuais de Rotinas Backend */}
-            <div className="pt-4 border-t border-line space-y-2">
-              <h4 className="text-xs font-bold text-ink uppercase tracking-wider">
-                Simulações do Backend (Testes)
-              </h4>
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" onClick={handleSimularCorte01h}>
-                  Simular Corte 01h
-                </Button>
-                <Button variant="outline" onClick={handleSimularAuditoria11h}>
-                  Simular Auditoria 11h
-                </Button>
-              </div>
-            </div>
           </div>
         </div>
       )}

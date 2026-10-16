@@ -5,6 +5,8 @@ import {
   calcularProximaRotacao,
   atingiuPenalidadeSemanal,
   getIsoWeekAndYear,
+  REGRAS_PONTOS_PADRAO,
+  obterRegraPorPontos,
 } from '../../src/types/faxina.ts';
 
 describe('Unit Tests: Quadro de Pontos & Rodízio Linear de Faxina', () => {
@@ -67,16 +69,53 @@ describe('Unit Tests: Quadro de Pontos & Rodízio Linear de Faxina', () => {
     });
   });
 
-  describe('3. Regra de Penalidade Semanal (>= 2 faltas)', () => {
+  describe('3. Regras de Penalidades Configuráveis (2 a 7 Faltas)', () => {
     it('0 e 1 falta não devem acionar penalidade', () => {
       assert.equal(atingiuPenalidadeSemanal(0), false);
       assert.equal(atingiuPenalidadeSemanal(1), false);
+      assert.equal(obterRegraPorPontos(0), null);
+      assert.equal(obterRegraPorPontos(1), null);
     });
 
-    it('2 ou mais faltas na semana devem acionar a penalidade cadastrada', () => {
+    it('deve retornar a penalidade específica para cada nível de 2 a 7 faltas', () => {
       assert.equal(atingiuPenalidadeSemanal(2), true);
-      assert.equal(atingiuPenalidadeSemanal(3), true);
-      assert.equal(atingiuPenalidadeSemanal(5), true);
+      assert.equal(obterRegraPorPontos(2)?.pontos, 2);
+      assert.equal(obterRegraPorPontos(2)?.descricao, 'Pagar 1 caixa de cerveja para a casa');
+
+      assert.equal(obterRegraPorPontos(3)?.pontos, 3);
+      assert.equal(obterRegraPorPontos(3)?.descricao, 'Pagar 2 caixas de cerveja para a casa');
+
+      assert.equal(obterRegraPorPontos(4)?.pontos, 4);
+      assert.equal(obterRegraPorPontos(4)?.descricao, 'Lavar a cozinha no domingo + 2 caixas');
+
+      assert.equal(obterRegraPorPontos(5)?.pontos, 5);
+      assert.equal(obterRegraPorPontos(5)?.descricao, 'Faxina geral da área externa + 3 caixas');
+
+      assert.equal(obterRegraPorPontos(6)?.pontos, 6);
+      assert.equal(obterRegraPorPontos(6)?.descricao, 'Faxina pesada da república inteira');
+
+      assert.equal(obterRegraPorPontos(7)?.pontos, 7);
+      assert.equal(obterRegraPorPontos(7)?.descricao, 'Pena máxima: Churrasco por conta do quarto');
+    });
+
+    it('mais de 7 faltas deve manter a penalidade máxima (nível 7)', () => {
+      assert.equal(obterRegraPorPontos(8)?.pontos, 7);
+      assert.equal(obterRegraPorPontos(10)?.pontos, 7);
+    });
+
+    it('deve permitir regras customizadas configuradas pelo administrador', () => {
+      const regrasCustom = [
+        { pontos: 2, descricao: 'Lavar louça por 3 dias' },
+        { pontos: 3, descricao: 'Comprar 1 engradado de refrigerante' },
+        { pontos: 4, descricao: 'Comprar 2 fardos de cerveja' },
+        { pontos: 5, descricao: 'Fazer o almoço de sábado' },
+        { pontos: 6, descricao: 'Pintar o muro da república' },
+        { pontos: 7, descricao: 'Churrasco com chopp pago pelo quarto' },
+      ];
+
+      assert.equal(obterRegraPorPontos(2, regrasCustom)?.descricao, 'Lavar louça por 3 dias');
+      assert.equal(obterRegraPorPontos(5, regrasCustom)?.descricao, 'Fazer o almoço de sábado');
+      assert.equal(obterRegraPorPontos(7, regrasCustom)?.descricao, 'Churrasco com chopp pago pelo quarto');
     });
   });
 

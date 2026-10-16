@@ -164,6 +164,14 @@ classDiagram
         +String penalidade_atribuida
     }
 
+    class REGRA_PONTO {
+        <<Entidade de Parametrização>>
+        +Int pontos (PK / 2 a 7)
+        +String descricao
+        +UUID atualizado_por (FK Usuario)
+        +DateTime atualizado_em
+    }
+
     class REGISTRO_DIARIO_FAXINA {
         <<Entidade Fraca>>
         +UUID id (PK)
@@ -557,11 +565,12 @@ flowchart LR
   - Thread de bate-papo em tempo real integrada ao ponto de bagunça.
   - Ação do culpado "Assumir Ponto" com atribuição do ponto no perfil.
   - Acúmulo mensal e alerta automático de 7 pontos = 1 caixa de cerveja.
-- [ ] **Módulo de Faxina dos Quartos:**
-  - Quadro semanal de quartos $\times$ áreas comuns da casa.
-  - Formulário diário de envio de fotos da arrumação da área do quarto.
-  - Indicador de status (Cumprido / Faltou) espelhando o quadro físico.
-  - Painel de penalidades configuráveis para quartos com 2+ faltas na semana.
+- [x] **Módulo de Faxina dos Quartos & Quadro de Pontos:**
+  - Quadro semanal de quartos $\times$ áreas comuns da casa com rodízio linear circular.
+  - Formulário diário de envio de fotos da arrumação da área do quarto (com compressão client-side).
+  - Corte agendado diário às 01:00 BRT e auditoria do fiscal às 11:00 BRT.
+  - Painel de fiscalização do Halls com aprovação, reprovação e controle de omissão.
+  - Tabela de penalidades progressivas configuráveis de 2 a 7 pontos no Supabase (`public.regras_quadro_pontos`) e governança do Admin.
 
 ### Fase 3: Caixas de Cerveja & Frente Mercado
 - [ ] **Gestão de Caixas de Cerveja:**

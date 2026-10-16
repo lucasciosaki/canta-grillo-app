@@ -3,11 +3,13 @@ import {
   FUNCOES_OFICIAIS,
   getIsoWeekAndYear,
   calcularProximaRotacao,
+  REGRAS_PONTOS_PADRAO,
 } from '../../../src/types/faxina.ts';
 import type {
   QuadroSemanalConsolidado,
   TarefaDiariaItem,
   EscalaSemanalItem,
+  RegraPontoItem,
 } from '../../../src/types/faxina.ts';
 
 function getLocalDateString(date = new Date()): string {
@@ -59,7 +61,7 @@ export class FaxinaService {
     // Se já existem itens para esta semana
     if (itensEscala && itensEscala.length >= 6) {
       const tarefasHoje = await this.garantirTarefasDoDia(hojeStr, semana_ano, ano, itensEscala as any);
-      return this.montarQuadro(semana_ano, ano, itensEscala as any, tarefasHoje);
+      return await this.montarQuadro(semana_ano, ano, itensEscala as any, tarefasHoje);
     }
 
     // 2. Não existe escala para esta semana: tenta rotacionar a partir da última semana cadastrada
@@ -98,14 +100,20 @@ export class FaxinaService {
         .eq('ano', ano);
 
       const tarefasHoje = await this.garantirTarefasDoDia(hojeStr, semana_ano, ano, (novaEscala || []) as any);
-      return this.montarQuadro(semana_ano, ano, (novaEscala || []) as any, tarefasHoje);
+      return await this.montarQuadro(semana_ano, ano, (novaEscala || []) as any, tarefasHoje);
     }
 
     // 3. Primeira vez no app: banco ainda não possui nenhuma escala cadastrada
+    const { data: regrasDb } = await db()
+      .from('regras_quadro_pontos')
+      .select('pontos, descricao')
+      .order('pontos');
+
     return {
       semana_ano,
       ano,
       penalidade_semana: 'Pagar 1 caixa de cerveja para a casa',
+      regras_pontos: (regrasDb && regrasDb.length > 0) ? regrasDb : REGRAS_PONTOS_PADRAO,
       quarto_fiscal_id: null,
       quarto_fiscal_nome: null,
       itens: [],
@@ -115,13 +123,46 @@ export class FaxinaService {
   }
 
   /**
+   * Salva/Atualiza as regras de penalidades para 2 a 7 pontos
+   */
+  static async salvarRegrasPontos(regras: RegraPontoItem[], usuarioId?: string): Promise<RegraPontoItem[]> {
+    const rows = regras.map((r) => ({
+      pontos: r.pontos,
+      descricao: r.descricao.trim(),
+      atualizado_por: usuarioId || null,
+      atualizado_em: new Date().toISOString(),
+    }));
+
+    const { error } = await db()
+      .from('regras_quadro_pontos')
+      .upsert(rows, { onConflict: 'pontos' });
+
+    if (error) {
+      console.warn('[FaxinaService] Aviso ao salvar em regras_quadro_pontos:', error);
+    }
+
+    const { data: regrasSalvas } = await db()
+      .from('regras_quadro_pontos')
+      .select('pontos, descricao')
+      .order('pontos');
+
+    return (regrasSalvas && regrasSalvas.length > 0) ? regrasSalvas : regras;
+  }
+
+  /**
    * Inicializa manualmente a primeira semana da casa (Admin)
    */
   static async inicializarEscala(
     atribuicoes: { quarto_id: string; area_comum_id: string }[],
-    penalidade = 'Pagar 1 caixa de cerveja para a casa'
+    penalidade = 'Pagar 1 caixa de cerveja para a casa',
+    regrasPontos?: RegraPontoItem[],
+    usuarioId?: string
   ): Promise<void> {
     const { semana_ano, ano } = getIsoWeekAndYear();
+
+    if (regrasPontos && regrasPontos.length > 0) {
+      await this.salvarRegrasPontos(regrasPontos, usuarioId);
+    }
 
     const rows = atribuicoes.map((a) => ({
       quarto_id: a.quarto_id,
@@ -496,19 +537,25 @@ export class FaxinaService {
     };
   }
 
-  private static montarQuadro(
+  private static async montarQuadro(
     semanaAno: number,
     ano: number,
     itens: EscalaSemanalItem[],
     tarefasHoje: TarefaDiariaItem[]
-  ): QuadroSemanalConsolidado {
-    const itemFiscal = itens.find((i) => i.area_comum?.nome === 'Halls');
+  ): Promise<QuadroSemanalConsolidado> {
+    const itemFiscal = itens.find((i) => (i.area_comum?.nome || '').trim().toLowerCase() === 'halls');
     const penalidade = itens[0]?.penalidade_atribuida || 'Pagar 1 caixa de cerveja para a casa';
+
+    const { data: regrasDb } = await db()
+      .from('regras_quadro_pontos')
+      .select('pontos, descricao')
+      .order('pontos');
 
     return {
       semana_ano: semanaAno,
       ano: ano,
       penalidade_semana: penalidade,
+      regras_pontos: (regrasDb && regrasDb.length > 0) ? regrasDb : REGRAS_PONTOS_PADRAO,
       quarto_fiscal_id: itemFiscal?.quarto_id || null,
       quarto_fiscal_nome: itemFiscal?.quarto?.nome || null,
       itens,
