@@ -1,18 +1,41 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
-import type { Front, FrontMember } from '../../types/frentes';
+import type { Front, FrontMember, FrenteDetalheTab } from '../../types/frentes';
 import type { Profile } from '../../types/auth';
+import {
+  filtrarFrentesVisiveis,
+  verificarPermissaoFrente,
+  obterApelidoFrente,
+} from '../../types/frentes';
 import { PageTitle, Section, Row, Tag, Button } from '../../components/ui';
-import { Users, Star, UserPlus, Trash2, X } from 'lucide-react';
-import { obterApelidoMorador } from '../../types/funcas';
+import { FrentePainelTab } from './components/FrentePainelTab';
+import { FrenteChatTab } from './components/FrenteChatTab';
+import { FrenteDogsTab } from './components/FrenteDogsTab';
+import { FrenteMercadoTab } from './components/FrenteMercadoTab';
+import { FrenteFinanceiroTab } from './components/FrenteFinanceiroTab';
+import {
+  Users,
+  Star,
+  UserPlus,
+  Trash2,
+  X,
+  Dog,
+  ShoppingCart,
+  MessageSquare,
+  ClipboardList,
+  ShieldAlert,
+} from 'lucide-react';
 
 interface FrentesScreenProps {
   onBack: () => void;
   onOpenFuncasDaFrente?: (frontId: string) => void;
 }
 
-export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFuncasDaFrente }) => {
+export const FrentesScreen: React.FC<FrentesScreenProps> = ({
+  onBack,
+  onOpenFuncasDaFrente,
+}) => {
   const { profile: currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin';
 
@@ -20,20 +43,24 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
   const [membros, setMembros] = useState<FrontMember[]>([]);
   const [todosMoradores, setTodosMoradores] = useState<Profile[]>([]);
   const [funcasCountMap, setFuncasCountMap] = useState<Record<string, number>>({});
-  const [funcasFrente, setFuncasFrente] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Frente selecionada para detalhes / gerenciamento
+  // Frente selecionada para tela dedicada
   const [frenteSelecionada, setFrenteSelecionada] = useState<Front | null>(null);
+  const [abaAtiva, setAbaAtiva] = useState<FrenteDetalheTab>('painel');
 
-  // Estado do formulário de adicionar morador
+  // Modais de Atalhos Rápidos Universais
+  const [modalAtalhoDogs, setModalAtalhoDogs] = useState(false);
+  const [modalAtalhoMercado, setModalAtalhoMercado] = useState(false);
+
+  // Estado do formulário de adicionar morador (Admin)
   const [modalAdicionar, setModalAdicionar] = useState(false);
   const [moradorSelecionadoId, setMoradorSelecionadoId] = useState('');
   const [isLiderNovo, setIsLiderNovo] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [feedback, setFeedback] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
 
-  const carregarDados = async () => {
+  const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
       // 1. Busca todas as frentes
@@ -46,7 +73,7 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
         setFrentes(frontsData as Front[]);
       }
 
-      // 2. Busca todas as alocações de membros com dados de perfil
+      // 2. Busca todas as alocações de membros com dados de perfil (apenas moradores ativos)
       const { data: membersData, error: membersError } = await supabase
         .from('front_members')
         .select('*, profile:profiles(*, quarto:rooms(*))');
@@ -55,75 +82,82 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
         setMembros(membersData as FrontMember[]);
       }
 
-      // 3. Busca lista de moradores ativos (apenas moradores e admins, excluindo externos)
+      // 3. Busca lista de todos os moradores ativos para o admin poder alocar
       const { data: profilesData } = await supabase
         .from('profiles')
         .select('*')
         .eq('ativo', true)
-        .in('role', ['morador', 'admin'])
         .order('nome');
 
       if (profilesData) {
-        setTodosMoradores(
-          (profilesData as Profile[]).filter(
-            (p) => p.role === 'morador' || p.role === 'admin'
-          )
-        );
+        setTodosMoradores(profilesData as Profile[]);
       }
 
       // 4. Busca contagem de funças pendentes por frente
       const { data: funcasData } = await supabase
         .from('funcas')
-        .select('id, frente_id')
+        .select('id, frente_id, status')
         .neq('status', 'concluida')
         .not('frente_id', 'is', null);
 
       if (funcasData) {
-        const countMap: Record<string, number> = {};
-        funcasData.forEach((f) => {
+        const counts: Record<string, number> = {};
+        funcasData.forEach((f: any) => {
           if (f.frente_id) {
-            countMap[f.frente_id] = (countMap[f.frente_id] || 0) + 1;
+            counts[f.frente_id] = (counts[f.frente_id] || 0) + 1;
           }
         });
-        setFuncasCountMap(countMap);
+        setFuncasCountMap(counts);
       }
     } catch (err) {
       console.error('[Frentes] Erro ao carregar dados:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     carregarDados();
-  }, []);
+  }, [carregarDados]);
 
-  // Carrega funças da frente selecionada
+  // Realtime para contagem de funças e alterações em membros
   useEffect(() => {
-    if (!frenteSelecionada) {
-      setFuncasFrente([]);
-      return;
-    }
+    const channel = supabase
+      .channel('frentes-funcas-channel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () => {
+        carregarDados();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () => {
+        carregarDados();
+      })
+      .subscribe();
 
-    supabase
-      .from('funcas')
-      .select('id, titulo, status, prazo, atribuicoes:funca_atribuicoes(morador:profiles(id, apelido, nome))')
-      .eq('frente_id', frenteSelecionada.id)
-      .neq('status', 'concluida')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        if (data) setFuncasFrente(data);
-      });
-  }, [frenteSelecionada]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [carregarDados]);
 
-  // Membros da frente atualmente aberta
+  // Frentes visíveis para o usuário autenticado
+  const frentesVisiveis = filtrarFrentesVisiveis(
+    frentes,
+    membros,
+    currentUser?.id,
+    isAdmin
+  );
+
   // Membros da frente atualmente aberta (excluindo convidados externos)
   const membrosDaFrente = frenteSelecionada
-    ? membros.filter((m) => m.front_id === frenteSelecionada.id && m.profile?.role !== 'externo')
+    ? membros.filter(
+        (m) => m.front_id === frenteSelecionada.id && m.profile?.role !== 'externo'
+      )
     : [];
 
   const lideres = membrosDaFrente.filter((m) => m.is_lider);
   const integrantes = membrosDaFrente.filter((m) => !m.is_lider);
+
+  const { podeAcessar, isMembro, isLider } = frenteSelecionada
+    ? verificarPermissaoFrente(frenteSelecionada.id, membros, currentUser?.id, isAdmin)
+    : { podeAcessar: false, isMembro: false, isLider: false };
 
   // Moradores que ainda NÃO fazem parte desta frente selecionada (apenas moradores/admins)
   const moradoresDisponiveis = todosMoradores
@@ -138,7 +172,10 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
     // Defesa em profundidade: rejeita qualquer perfil que não seja morador/admin ativo da casa
     const morador = todosMoradores.find((m) => m.id === moradorSelecionadoId);
     if (!morador || (morador.role !== 'morador' && morador.role !== 'admin') || !morador.ativo) {
-      setFeedback({ tipo: 'erro', texto: 'Apenas moradores ativos da república podem ser vinculados a uma frente.' });
+      setFeedback({
+        tipo: 'erro',
+        texto: 'Apenas moradores ativos da república podem ser vinculados a uma frente.',
+      });
       return;
     }
 
@@ -181,8 +218,8 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
 
   // Remover morador da frente
   const handleRemoverMorador = async (member: FrontMember) => {
-    const nome = member.profile?.nome || 'este morador';
-    if (!confirm(`Deseja remover ${nome} da frente ${frenteSelecionada?.nome}?`)) return;
+    const apelido = obterApelidoFrente(member.profile);
+    if (!confirm(`Deseja remover ${apelido} da frente ${frenteSelecionada?.nome}?`)) return;
 
     setSalvando(true);
     const { error } = await supabase
@@ -198,11 +235,361 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
     setSalvando(false);
   };
 
+  // Se uma frente estiver selecionada, renderiza a tela dedicada da frente com abas
+  if (frenteSelecionada) {
+    if (!podeAcessar) {
+      return (
+        <div className="py-12 text-center space-y-3">
+          <ShieldAlert className="w-10 h-10 text-clay mx-auto" />
+          <h3 className="text-base font-semibold text-ink">Acesso Restrito</h3>
+          <p className="text-xs text-muted max-w-xs mx-auto">
+            Você não participa da frente <strong>{frenteSelecionada.nome}</strong>. Apenas membros e administradores podem acessar seu painel e chat interno.
+          </p>
+          <Button variant="outline" onClick={() => setFrenteSelecionada(null)}>
+            Voltar para Frentes
+          </Button>
+        </div>
+      );
+    }
+
+    const temAbaEspecifica = ['dogs', 'mercado', 'financeiro'].includes(frenteSelecionada.slug);
+    const labelAbaEspecifica =
+      frenteSelecionada.slug === 'dogs'
+        ? 'Refeições Dogs'
+        : frenteSelecionada.slug === 'mercado'
+        ? 'Mercado'
+        : 'Externos (Mês)';
+
+    return (
+      <div className="space-y-5 animate-in fade-in duration-150">
+        <PageTitle
+          title={frenteSelecionada.nome}
+          hint={frenteSelecionada.descricao || 'Frente Organizacional da Canta Grillo'}
+          back={{ label: 'Frentes', onClick: () => setFrenteSelecionada(null) }}
+        />
+
+        {/* Barra de Status de Membro */}
+        <div className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2">
+            {isLider && (
+              <span className="inline-flex items-center gap-1 font-semibold text-forest bg-mint px-2 py-0.5 rounded-md">
+                <Star className="w-3.5 h-3.5 fill-forest" />
+                Você é Líder desta Frente
+              </span>
+            )}
+            {!isLider && isMembro && (
+              <span className="font-medium text-ink">
+                Você é integrante desta frente
+              </span>
+            )}
+            {isAdmin && !isMembro && (
+              <span className="text-muted font-medium">Acesso de Administrador</span>
+            )}
+          </div>
+          <span className="text-muted font-medium">{membrosDaFrente.length} membros</span>
+        </div>
+
+        {/* Abas Internas da Frente */}
+        <div className="flex border-b border-line gap-2 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => setAbaAtiva('painel')}
+            className={`pb-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
+              abaAtiva === 'painel'
+                ? 'border-forest text-forest'
+                : 'border-transparent text-muted hover:text-ink'
+            }`}
+          >
+            <ClipboardList className="w-3.5 h-3.5" />
+            Painel da Frente
+          </button>
+
+          {temAbaEspecifica && (
+            <button
+              type="button"
+              onClick={() => setAbaAtiva('especifica')}
+              className={`pb-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
+                abaAtiva === 'especifica'
+                  ? 'border-forest text-forest'
+                  : 'border-transparent text-muted hover:text-ink'
+              }`}
+            >
+              {frenteSelecionada.slug === 'dogs' && <Dog className="w-3.5 h-3.5" />}
+              {frenteSelecionada.slug === 'mercado' && <ShoppingCart className="w-3.5 h-3.5" />}
+              {frenteSelecionada.slug === 'financeiro' && <Users className="w-3.5 h-3.5" />}
+              {labelAbaEspecifica}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setAbaAtiva('chat')}
+            className={`pb-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
+              abaAtiva === 'chat'
+                ? 'border-forest text-forest'
+                : 'border-transparent text-muted hover:text-ink'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            Chat da Frente
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAbaAtiva('membros')}
+            className={`pb-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
+              abaAtiva === 'membros'
+                ? 'border-forest text-forest'
+                : 'border-transparent text-muted hover:text-ink'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            Membros
+          </button>
+        </div>
+
+        {/* Conteúdo da Aba Selecionada */}
+        {abaAtiva === 'painel' && (
+          <FrentePainelTab
+            frente={frenteSelecionada}
+            membros={membrosDaFrente}
+            isAdmin={Boolean(isAdmin)}
+            isLider={isLider}
+            isMembro={isMembro}
+            onOpenFuncasGeral={
+              onOpenFuncasDaFrente
+                ? () => onOpenFuncasDaFrente(frenteSelecionada.id)
+                : undefined
+            }
+            todasFrentes={frentes}
+            todosMembros={membros}
+            todosMoradores={todosMoradores}
+          />
+        )}
+
+        {abaAtiva === 'especifica' && frenteSelecionada.slug === 'dogs' && (
+          <FrenteDogsTab />
+        )}
+
+        {abaAtiva === 'especifica' && frenteSelecionada.slug === 'mercado' && (
+          <FrenteMercadoTab isAdmin={Boolean(isAdmin)} isMembroDaFrente={isMembro} />
+        )}
+
+        {abaAtiva === 'especifica' && frenteSelecionada.slug === 'financeiro' && (
+          <FrenteFinanceiroTab isAdmin={Boolean(isAdmin)} />
+        )}
+
+        {abaAtiva === 'chat' && (
+          <FrenteChatTab frente={frenteSelecionada} membros={membrosDaFrente} />
+        )}
+
+        {abaAtiva === 'membros' && (
+          <div className="space-y-5">
+            {isAdmin && (
+              <Button
+                full
+                variant="outline"
+                onClick={() => {
+                  setModalAdicionar(true);
+                  setMoradorSelecionadoId(moradoresDisponiveis[0]?.id || '');
+                }}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <UserPlus className="w-4 h-4 text-forest" />
+                  Adicionar Morador nesta Frente
+                </span>
+              </Button>
+            )}
+
+            {/* Líderes */}
+            <div>
+              <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Star className="w-3.5 h-3.5 text-forest fill-forest" />
+                Líderes da Frente ({lideres.length})
+              </h4>
+
+              {lideres.length === 0 ? (
+                <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
+                  Nenhum líder atribuído a esta frente.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {lideres.map((m) => (
+                    <div
+                      key={m.profile_id}
+                      className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-ink">
+                          {obterApelidoFrente(m.profile)}
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
+                        </p>
+                      </div>
+
+                      {isAdmin && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleLider(m)}
+                            disabled={salvando}
+                            className="p-1.5 text-xs text-muted hover:text-ink rounded-md transition-colors"
+                          >
+                            Tirar liderança
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoverMorador(m)}
+                            disabled={salvando}
+                            className="p-1.5 text-clay hover:bg-clay-tint rounded-md transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Integrantes */}
+            <div>
+              <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-muted" />
+                Integrantes ({integrantes.length})
+              </h4>
+
+              {integrantes.length === 0 ? (
+                <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
+                  Nenhum integrante além dos líderes.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {integrantes.map((m) => (
+                    <div
+                      key={m.profile_id}
+                      className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-ink">
+                          {obterApelidoFrente(m.profile)}
+                        </p>
+                        <p className="text-[11px] text-muted">
+                          Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
+                        </p>
+                      </div>
+
+                      {isAdmin && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleLider(m)}
+                            disabled={salvando}
+                            className="p-1.5 text-xs text-forest hover:bg-mint rounded-md transition-colors flex items-center gap-1"
+                          >
+                            <Star className="w-3.5 h-3.5" />
+                            Promover
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoverMorador(m)}
+                            disabled={salvando}
+                            className="p-1.5 text-clay hover:bg-clay-tint rounded-md transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Adicionar Morador (Admin) */}
+        {modalAdicionar && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="w-full max-w-sm bg-paper border border-line rounded-2xl p-5 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-ink">
+                  Vincular a {frenteSelecionada.nome}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setModalAdicionar(false)}
+                  className="text-muted hover:text-ink"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {moradoresDisponiveis.length === 0 ? (
+                <p className="text-xs text-muted py-2">
+                  Todos os moradores ativos já fazem parte desta frente.
+                </p>
+              ) : (
+                <form onSubmit={handleAdicionarMorador} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-muted mb-1.5">
+                      Selecione o Morador
+                    </label>
+                    <select
+                      value={moradorSelecionadoId}
+                      onChange={(e) => setMoradorSelecionadoId(e.target.value)}
+                      required
+                      className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
+                    >
+                      <option value="">Selecione um morador...</option>
+                      {moradoresDisponiveis.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {obterApelidoFrente(m)} — Geração {m.geracao || '025'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <label className="flex items-center gap-2.5 text-xs text-ink cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={isLiderNovo}
+                      onChange={(e) => setIsLiderNovo(e.target.checked)}
+                      className="w-4 h-4 text-forest rounded border-line focus:ring-forest"
+                    />
+                    <span>Nomear este morador como <strong>Líder da Frente</strong></span>
+                  </label>
+
+                  <div className="pt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      full
+                      onClick={() => setModalAdicionar(false)}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button type="submit" full disabled={salvando || !moradorSelecionadoId}>
+                      {salvando ? 'Salvando...' : 'Adicionar'}
+                    </Button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // TELA PRINCIPAL DE FRENTES
   return (
     <>
       <PageTitle
         title="Frentes da República"
-        hint="10 frentes organizacionais e seus líderes"
+        hint="Páginas das comissões, chats internos e demandas"
         back={{ label: 'Casa', onClick: onBack }}
       />
 
@@ -218,17 +605,49 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
         </div>
       )}
 
+      {/* Seção de Atalhos Rápidos Universais (acessíveis a toda a casa) */}
+      <div className="mb-6 space-y-2">
+        <h3 className="text-xs font-semibold text-muted uppercase tracking-wider">
+          Ações Rápidas da Casa
+        </h3>
+        <div className="grid grid-cols-2 gap-2.5">
+          <Button variant="outline" onClick={() => setModalAtalhoDogs(true)}>
+            <span className="flex items-center justify-center gap-2 text-xs font-semibold">
+              <Dog className="w-4 h-4 text-forest" />
+              Alimentar Dogs
+            </span>
+          </Button>
+
+          <Button variant="outline" onClick={() => setModalAtalhoMercado(true)}>
+            <span className="flex items-center justify-center gap-2 text-xs font-semibold">
+              <ShoppingCart className="w-4 h-4 text-forest" />
+              Pedir Item Mercado
+            </span>
+          </Button>
+        </div>
+      </div>
+
       {loading ? (
         <div className="py-12 text-center text-xs text-muted">
           Carregando frentes e integrantes...
         </div>
+      ) : frentesVisiveis.length === 0 ? (
+        <div className="p-8 text-center border border-dashed border-line rounded-xl bg-surface/50 space-y-2">
+          <Users className="w-8 h-8 text-muted mx-auto mb-1" />
+          <p className="text-sm font-semibold text-ink">Nenhuma frente atribuída</p>
+          <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">
+            Você ainda não foi vinculado a nenhuma frente organizacional. Peça ao Administrador da república para incluí-lo na sua frente.
+          </p>
+        </div>
       ) : (
-        <Section title="10 Frentes Oficiais">
-          {frentes.map((f) => {
-            const fm = membros.filter((m) => m.front_id === f.id);
+        <Section title={isAdmin ? '10 Frentes Oficiais (Gestão Total)' : 'Suas Frentes Organizacionais'}>
+          {frentesVisiveis.map((f) => {
+            const fm = membros.filter(
+              (m) => m.front_id === f.id && m.profile?.role !== 'externo'
+            );
             const lideresNomes = fm
               .filter((m) => m.is_lider)
-              .map((m) => m.profile?.apelido || m.profile?.nome || 'Líder')
+              .map((m) => obterApelidoFrente(m.profile))
               .join(', ');
 
             return (
@@ -242,12 +661,15 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
                 }
                 onClick={() => {
                   setFrenteSelecionada(f);
+                  setAbaAtiva('painel');
                   setFeedback(null);
                 }}
                 right={
                   <span className="flex items-center gap-1.5 text-xs text-muted">
                     {funcasCountMap[f.id] > 0 && (
-                      <Tag tone="alert">{funcasCountMap[f.id]} {funcasCountMap[f.id] === 1 ? 'funça' : 'funças'}</Tag>
+                      <Tag tone="alert">
+                        {funcasCountMap[f.id]} {funcasCountMap[f.id] === 1 ? 'funça' : 'funças'}
+                      </Tag>
                     )}
                     {fm.length > 0 && <Tag tone="green">{fm.length} {fm.length === 1 ? 'membro' : 'membros'}</Tag>}
                     <span className="text-muted">›</span>
@@ -259,295 +681,46 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({ onBack, onOpenFunc
         </Section>
       )}
 
-      {/* MODAL / PAINEL DE DETALHES E GERENCIAMENTO DA FRENTE */}
-      {frenteSelecionada && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-md bg-paper border border-line rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
-            {/* Header da Frente */}
-            <div className="p-4 border-b border-line bg-surface flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-semibold tracking-tight text-ink">
-                  {frenteSelecionada.nome}
-                </h3>
-                {frenteSelecionada.descricao && (
-                  <p className="text-xs text-muted mt-0.5 leading-relaxed">
-                    {frenteSelecionada.descricao}
-                  </p>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => setFrenteSelecionada(null)}
-                className="p-1 rounded-md text-muted hover:text-ink transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Conteúdo com scroll */}
-            <div className="p-4 overflow-y-auto space-y-5 flex-1">
-              {/* Botão de Adicionar Morador (Exclusivo Admin) */}
-              {isAdmin && (
-                <div className="pt-1">
-                  <Button
-                    full
-                    variant="outline"
-                    onClick={() => {
-                      setModalAdicionar(true);
-                      setMoradorSelecionadoId('');
-                    }}
-                  >
-                    <span className="flex items-center justify-center gap-2">
-                      <UserPlus className="w-4 h-4 text-forest" />
-                      Adicionar Morador nesta Frente
-                    </span>
-                  </Button>
-                </div>
-              )}
-
-              {/* Seção de Líderes */}
-              <div>
-                <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Star className="w-3.5 h-3.5 text-forest fill-forest" />
-                  Líderes da Frente ({lideres.length})
-                </h4>
-
-                {lideres.length === 0 ? (
-                  <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
-                    Nenhum líder atribuído a esta frente.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {lideres.map((m) => (
-                      <div
-                        key={m.profile_id}
-                        className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-ink">
-                            {m.profile?.apelido || m.profile?.nome}
-                          </p>
-                          <p className="text-[11px] text-muted">
-                            Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
-                          </p>
-                        </div>
-
-                        {isAdmin && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              title="Remover título de Líder"
-                              onClick={() => handleToggleLider(m)}
-                              disabled={salvando}
-                              className="p-1.5 text-xs text-muted hover:text-ink rounded-md transition-colors"
-                            >
-                              Tirar liderança
-                            </button>
-                            <button
-                              type="button"
-                              title="Remover da frente"
-                              onClick={() => handleRemoverMorador(m)}
-                              disabled={salvando}
-                              className="p-1.5 text-clay hover:bg-clay-tint rounded-md transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Seção de Integrantes */}
-              <div>
-                <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-muted" />
-                  Integrantes ({integrantes.length})
-                </h4>
-
-                {integrantes.length === 0 ? (
-                  <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
-                    Nenhum integrante além dos líderes.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {integrantes.map((m) => (
-                      <div
-                        key={m.profile_id}
-                        className="p-3 rounded-xl border border-line bg-surface flex items-center justify-between gap-2"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-ink">
-                            {m.profile?.apelido || m.profile?.nome}
-                          </p>
-                          <p className="text-[11px] text-muted">
-                            Geração {m.profile?.geracao || '025'} · {m.profile?.quarto?.nome || 'Quarto'}
-                          </p>
-                        </div>
-
-                        {isAdmin && (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              title="Promover a Líder da Frente"
-                              onClick={() => handleToggleLider(m)}
-                              disabled={salvando}
-                              className="p-1.5 text-xs text-forest hover:bg-mint rounded-md transition-colors flex items-center gap-1"
-                            >
-                              <Star className="w-3.5 h-3.5" />
-                              Promover
-                            </button>
-                            <button
-                              type="button"
-                              title="Remover da frente"
-                              onClick={() => handleRemoverMorador(m)}
-                              disabled={salvando}
-                              className="p-1.5 text-clay hover:bg-clay-tint rounded-md transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Seção de Funças da Frente */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-semibold text-muted uppercase tracking-wider flex items-center gap-1.5">
-                    Funças desta Frente ({funcasFrente.length})
-                  </h4>
-                  {onOpenFuncasDaFrente && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const frontId = frenteSelecionada.id;
-                        setFrenteSelecionada(null);
-                        onOpenFuncasDaFrente(frontId);
-                      }}
-                      className="text-xs text-forest hover:text-forest-dark font-medium"
-                    >
-                      Abrir no painel ›
-                    </button>
-                  )}
-                </div>
-
-                {funcasFrente.length === 0 ? (
-                  <p className="text-xs text-muted/80 italic p-3 rounded-lg border border-line bg-surface">
-                    Nenhuma funça pendente nesta frente.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {funcasFrente.map((funca) => {
-                      const donos = (funca.atribuicoes || [])
-                        .map((a: any) => a.morador?.apelido || a.morador?.nome || 'Morador')
-                        .join(', ');
-
-                      return (
-                        <div
-                          key={funca.id}
-                          className="p-3 rounded-xl border border-line bg-surface flex items-start justify-between gap-2"
-                        >
-                          <div>
-                            <p className="text-xs font-semibold text-ink">{funca.titulo}</p>
-                            <p className="text-[11px] text-muted mt-0.5">
-                              {donos ? `Responsável: ${donos}` : 'Sem responsável'}
-                              {funca.prazo && ` · Prazo: ${funca.prazo}`}
-                            </p>
-                          </div>
-                          <Tag tone={funca.status === 'em_andamento' ? 'green' : 'neutral'}>
-                            {funca.status === 'aberta' ? 'Aberta' : 'Em andamento'}
-                          </Tag>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="p-3 border-t border-line bg-surface">
-              <Button full variant="outline" onClick={() => setFrenteSelecionada(null)}>
-                Fechar
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SUBMODAL PARA ADICIONAR MORADOR */}
-      {modalAdicionar && frenteSelecionada && (
+      {/* Modal Rápido: Alimentar Dogs */}
+      {modalAtalhoDogs && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-sm bg-paper border border-line rounded-2xl p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-ink">
-                Vincular a {frenteSelecionada.nome}
-              </h3>
+            <div className="flex items-center justify-between border-b border-line pb-2.5">
+              <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                <Dog className="w-4 h-4 text-forest" />
+                Alimentar os Cães
+              </span>
               <button
                 type="button"
-                onClick={() => setModalAdicionar(false)}
+                onClick={() => setModalAtalhoDogs(false)}
                 className="text-muted hover:text-ink"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
+            <FrenteDogsTab compact onSuccess={() => setModalAtalhoDogs(false)} />
+          </div>
+        </div>
+      )}
 
-            {moradoresDisponiveis.length === 0 ? (
-              <p className="text-xs text-muted py-2">
-                Todos os moradores ativos já fazem parte desta frente.
-              </p>
-            ) : (
-              <form onSubmit={handleAdicionarMorador} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-muted mb-1.5">
-                    Selecione o Morador
-                  </label>
-                  <select
-                    value={moradorSelecionadoId}
-                    onChange={(e) => setMoradorSelecionadoId(e.target.value)}
-                    required
-                    className="w-full px-3 py-2.5 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
-                  >
-                    <option value="">Selecione um morador...</option>
-                    {moradoresDisponiveis.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {obterApelidoMorador(m)} — Geração {m.geracao || '025'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <label className="flex items-center gap-2.5 text-xs text-ink cursor-pointer pt-1">
-                  <input
-                    type="checkbox"
-                    checked={isLiderNovo}
-                    onChange={(e) => setIsLiderNovo(e.target.checked)}
-                    className="w-4 h-4 text-forest rounded border-line focus:ring-forest"
-                  />
-                  <span>Nomear este morador como <strong>Líder da Frente</strong></span>
-                </label>
-
-                <div className="pt-2 flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    full
-                    onClick={() => setModalAdicionar(false)}
-                  >
-                    Cancelar
-                  </Button>
-                  <Button type="submit" full disabled={salvando || !moradorSelecionadoId}>
-                    {salvando ? 'Salvando...' : 'Adicionar'}
-                  </Button>
-                </div>
-              </form>
-            )}
+      {/* Modal Rápido: Pedir Item de Mercado */}
+      {modalAtalhoMercado && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-sm bg-paper border border-line rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-line pb-2.5">
+              <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                <ShoppingCart className="w-4 h-4 text-forest" />
+                Pedir Item de Mercado
+              </span>
+              <button
+                type="button"
+                onClick={() => setModalAtalhoMercado(false)}
+                className="text-muted hover:text-ink"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <FrenteMercadoTab compactSolicitar onSuccess={() => setModalAtalhoMercado(false)} />
           </div>
         </div>
       )}

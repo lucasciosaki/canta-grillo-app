@@ -1244,3 +1244,338 @@ END $$;
 
 
 
+
+-- ==============================================================================
+-- 8. POLÍTICAS RLS E REALTIME: FRENTES, CHATS, FUNÇAS, DOGS E MERCADO (FASE 4)
+-- ==============================================================================
+
+-- 8.1 Funções Helper de Permissão em Frentes (SECURITY DEFINER)
+CREATE OR REPLACE FUNCTION public.is_front_member(p_front_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.front_members fm
+    JOIN public.profiles p ON p.id = fm.profile_id
+    WHERE fm.front_id = p_front_id
+      AND fm.profile_id = auth.uid()
+      AND p.ativo = true
+      AND p.role IN ('morador', 'admin')
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.is_front_lider(p_front_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.front_members fm
+    JOIN public.profiles p ON p.id = fm.profile_id
+    WHERE fm.front_id = p_front_id
+      AND fm.profile_id = auth.uid()
+      AND fm.is_lider = true
+      AND p.ativo = true
+      AND p.role IN ('morador', 'admin')
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.is_front_member_by_slug(p_slug TEXT)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.front_members fm
+    JOIN public.fronts f ON f.id = fm.front_id
+    JOIN public.profiles p ON p.id = fm.profile_id
+    WHERE f.slug = p_slug
+      AND fm.profile_id = auth.uid()
+      AND p.ativo = true
+      AND p.role IN ('morador', 'admin')
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 8.2 TABELA FRONTS
+ALTER TABLE public.fronts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Moradores ativos e admin leem frentes" ON public.fronts;
+CREATE POLICY "Moradores ativos e admin leem frentes"
+ON public.fronts FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Apenas admin gerencia frentes" ON public.fronts;
+CREATE POLICY "Apenas admin gerencia frentes"
+ON public.fronts FOR ALL
+TO authenticated
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
+
+-- 8.3 TABELA MENSAGENS_FRENTE (Isolamento Estrito por Membro da Frente ou Admin - RN11)
+ALTER TABLE public.mensagens_frente ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Membros da frente e admin leem mensagens da frente" ON public.mensagens_frente;
+CREATE POLICY "Membros da frente e admin leem mensagens da frente"
+ON public.mensagens_frente FOR SELECT
+TO authenticated
+USING (
+  public.is_admin() OR public.is_front_member(frente_id)
+);
+
+DROP POLICY IF EXISTS "Membros da frente e admin enviam mensagens na frente" ON public.mensagens_frente;
+CREATE POLICY "Membros da frente e admin enviam mensagens na frente"
+ON public.mensagens_frente FOR INSERT
+TO authenticated
+WITH CHECK (
+  autor_id = auth.uid() AND (
+    public.is_admin() OR public.is_front_member(frente_id)
+  )
+);
+
+DROP POLICY IF EXISTS "Autor ou admin remove mensagem da frente" ON public.mensagens_frente;
+CREATE POLICY "Autor ou admin remove mensagem da frente"
+ON public.mensagens_frente FOR DELETE
+TO authenticated
+USING (
+  public.is_admin() OR (public.is_front_member(frente_id) AND autor_id = auth.uid())
+);
+
+-- 8.4 TABELAS FUNCAS E FUNCA_ATRIBUICOES (RN09)
+ALTER TABLE public.funcas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.funca_atribuicoes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Moradores ativos e admin leem funcas" ON public.funcas;
+CREATE POLICY "Moradores ativos e admin leem funcas"
+ON public.funcas FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Morador ativo ou admin cria funca" ON public.funcas;
+CREATE POLICY "Morador ativo ou admin cria funca"
+ON public.funcas FOR INSERT
+TO authenticated
+WITH CHECK (
+  relator_id = auth.uid() AND (public.is_admin() OR public.is_active_morador())
+);
+
+DROP POLICY IF EXISTS "Membros da frente relator ou admin atualizam funca" ON public.funcas;
+CREATE POLICY "Membros da frente relator ou admin atualizam funca"
+ON public.funcas FOR UPDATE
+TO authenticated
+USING (
+  public.is_admin()
+  OR (frente_id IS NOT NULL AND public.is_front_member(frente_id))
+  OR relator_id = auth.uid()
+  OR EXISTS (
+    SELECT 1 FROM public.funca_atribuicoes fa
+    WHERE fa.funca_id = public.funcas.id AND fa.morador_id = auth.uid()
+  )
+)
+WITH CHECK (
+  public.is_admin()
+  OR (frente_id IS NOT NULL AND public.is_front_member(frente_id))
+  OR relator_id = auth.uid()
+  OR EXISTS (
+    SELECT 1 FROM public.funca_atribuicoes fa
+    WHERE fa.funca_id = public.funcas.id AND fa.morador_id = auth.uid()
+  )
+);
+
+DROP POLICY IF EXISTS "Admin lider da frente ou relator remove funca" ON public.funcas;
+CREATE POLICY "Admin lider da frente ou relator remove funca"
+ON public.funcas FOR DELETE
+TO authenticated
+USING (
+  public.is_admin()
+  OR (frente_id IS NOT NULL AND public.is_front_lider(frente_id))
+  OR relator_id = auth.uid()
+);
+
+-- FUNCA_ATRIBUICOES
+DROP POLICY IF EXISTS "Moradores ativos e admin leem atribuicoes de funcas" ON public.funca_atribuicoes;
+CREATE POLICY "Moradores ativos e admin leem atribuicoes de funcas"
+ON public.funca_atribuicoes FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Atribuicao de funcas validada por cargo" ON public.funca_atribuicoes;
+CREATE POLICY "Atribuicao de funcas validada por cargo"
+ON public.funca_atribuicoes FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_admin()
+  OR (
+    -- Autoatribuição: morador ativo atribui para si mesmo
+    public.is_active_morador()
+    AND morador_id = auth.uid()
+    AND atribuido_por = auth.uid()
+    AND tipo_atribuicao = 'autoatribuicao'
+    AND EXISTS (
+      SELECT 1 FROM public.funcas f
+      WHERE f.id = funca_id
+        AND (f.frente_id IS NULL OR public.is_front_member(f.frente_id))
+    )
+  )
+  OR (
+    -- Líder de Frente: atribui funça da sua frente para membro da mesma frente
+    public.is_active_morador()
+    AND atribuido_por = auth.uid()
+    AND tipo_atribuicao = 'lider_frente'
+    AND EXISTS (
+      SELECT 1 FROM public.funcas f
+      JOIN public.front_members fm ON fm.front_id = f.frente_id AND fm.profile_id = public.funca_atribuicoes.morador_id
+      WHERE f.id = funca_id
+        AND f.frente_id IS NOT NULL
+        AND public.is_front_lider(f.frente_id)
+    )
+  )
+);
+
+DROP POLICY IF EXISTS "Remover atribuicao de funca" ON public.funca_atribuicoes;
+CREATE POLICY "Remover atribuicao de funca"
+ON public.funca_atribuicoes FOR DELETE
+TO authenticated
+USING (
+  public.is_admin()
+  OR morador_id = auth.uid()
+  OR atribuido_por = auth.uid()
+  OR EXISTS (
+    SELECT 1 FROM public.funcas f
+    WHERE f.id = funca_id AND f.frente_id IS NOT NULL AND public.is_front_lider(f.frente_id)
+  )
+);
+
+-- 8.5 TABELA DOGS_REFEICOES_DIARIAS (RN10 - Checklist Diário Manhã e Noite)
+ALTER TABLE public.dogs_refeicoes_diarias ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Moradores ativos e admin leem refeicoes dos dogs" ON public.dogs_refeicoes_diarias;
+CREATE POLICY "Moradores ativos e admin leem refeicoes dos dogs"
+ON public.dogs_refeicoes_diarias FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Morador ativo ou admin registra refeicao dos dogs hoje" ON public.dogs_refeicoes_diarias;
+CREATE POLICY "Morador ativo ou admin registra refeicao dos dogs hoje"
+ON public.dogs_refeicoes_diarias FOR INSERT
+TO authenticated
+WITH CHECK (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND alimentado_por = auth.uid()
+  AND (public.is_admin() OR public.is_active_morador())
+);
+
+DROP POLICY IF EXISTS "Morador ativo ou admin atualiza refeicao dos dogs hoje" ON public.dogs_refeicoes_diarias;
+CREATE POLICY "Morador ativo ou admin atualiza refeicao dos dogs hoje"
+ON public.dogs_refeicoes_diarias FOR UPDATE
+TO authenticated
+USING (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND (public.is_admin() OR public.is_active_morador())
+)
+WITH CHECK (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND alimentado_por = auth.uid()
+  AND (public.is_admin() OR public.is_active_morador())
+);
+
+DROP POLICY IF EXISTS "Autor membro dogs ou admin desmarca refeicao dos dogs hoje" ON public.dogs_refeicoes_diarias;
+CREATE POLICY "Autor membro dogs ou admin desmarca refeicao dos dogs hoje"
+ON public.dogs_refeicoes_diarias FOR DELETE
+TO authenticated
+USING (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND (
+    public.is_admin()
+    OR public.is_front_member_by_slug('dogs')
+    OR (public.is_active_morador() AND alimentado_por = auth.uid())
+  )
+);
+
+-- 8.6 TABELAS MARKET_CATALOG E SOLICITACOES_MERCADO (RN08)
+ALTER TABLE public.market_catalog ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.solicitacoes_mercado ENABLE ROW LEVEL SECURITY;
+
+-- Catálogo Mestre: Todos os moradores ativos leem; apenas Frente Mercado ou Admin gerenciam
+DROP POLICY IF EXISTS "Moradores ativos e admin leem catalogo de mercado" ON public.market_catalog;
+CREATE POLICY "Moradores ativos e admin leem catalogo de mercado"
+ON public.market_catalog FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Apenas frente mercado ou admin gerencia catalogo" ON public.market_catalog;
+CREATE POLICY "Apenas frente mercado ou admin gerencia catalogo"
+ON public.market_catalog FOR ALL
+TO authenticated
+USING (public.is_admin() OR public.is_front_member_by_slug('mercado'))
+WITH CHECK (public.is_admin() OR public.is_front_member_by_slug('mercado'));
+
+-- Solicitações de Mercado: Moradores ativos solicitam; Frente Mercado ou Admin dão baixa ('comprado')
+DROP POLICY IF EXISTS "Moradores ativos e admin leem solicitacoes de mercado" ON public.solicitacoes_mercado;
+CREATE POLICY "Moradores ativos e admin leem solicitacoes de mercado"
+ON public.solicitacoes_mercado FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Morador ativo solicita item do catalogo" ON public.solicitacoes_mercado;
+CREATE POLICY "Morador ativo solicita item do catalogo"
+ON public.solicitacoes_mercado FOR INSERT
+TO authenticated
+WITH CHECK (
+  solicitado_por = auth.uid()
+  AND status = 'solicitado'
+  AND (public.is_admin() OR public.is_active_morador())
+);
+
+DROP POLICY IF EXISTS "Frente mercado ou admin atualiza status de compra" ON public.solicitacoes_mercado;
+CREATE POLICY "Frente mercado ou admin atualiza status de compra"
+ON public.solicitacoes_mercado FOR UPDATE
+TO authenticated
+USING (public.is_admin() OR public.is_front_member_by_slug('mercado'))
+WITH CHECK (public.is_admin() OR public.is_front_member_by_slug('mercado'));
+
+DROP POLICY IF EXISTS "Autor frente mercado ou admin remove solicitacao" ON public.solicitacoes_mercado;
+CREATE POLICY "Autor frente mercado ou admin remove solicitacao"
+ON public.solicitacoes_mercado FOR DELETE
+TO authenticated
+USING (
+  public.is_admin()
+  OR public.is_front_member_by_slug('mercado')
+  OR (public.is_active_morador() AND solicitado_por = auth.uid() AND status = 'solicitado')
+);
+
+-- Seed Inicial do Catálogo Mestre de Mercado
+INSERT INTO public.market_catalog (nome, categoria, unidade_medida, is_ativo)
+VALUES
+  ('Arroz Tipo 1 (5kg)', 'Alimentos', 'pacote', true),
+  ('Feijão Carioca (1kg)', 'Alimentos', 'pacote', true),
+  ('Óleo de Soja', 'Alimentos', 'garrafa', true),
+  ('Café em Pó (500g)', 'Alimentos', 'pacote', true),
+  ('Açúcar Refinado (1kg)', 'Alimentos', 'pacote', true),
+  ('Sal Refinado (1kg)', 'Alimentos', 'pacote', true),
+  ('Detergente Neutro', 'Limpeza', 'frasco', true),
+  ('Sabão em Pó', 'Limpeza', 'caixa', true),
+  ('Água Sanitária (2L)', 'Limpeza', 'garrafa', true),
+  ('Desinfetante', 'Limpeza', 'garrafa', true),
+  ('Esponja de Louça', 'Limpeza', 'pacote', true),
+  ('Saco de Lixo 100L', 'Descartáveis', 'rolo', true),
+  ('Papel Higiênico (Fardo)', 'Higiene', 'fardo', true)
+ON CONFLICT (nome) DO NOTHING;
+
+-- 8.7 Publicação Realtime para as tabelas da Fase 4
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'mensagens_frente',
+    'funcas',
+    'funca_atribuicoes',
+    'dogs_refeicoes_diarias',
+    'market_catalog',
+    'solicitacoes_mercado'
+  ]
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;
