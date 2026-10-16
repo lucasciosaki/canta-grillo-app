@@ -528,7 +528,7 @@ O desenvolvimento será conduzido em etapas incrementais e independentemente tes
 flowchart LR
     F0["Fase 0: Setup & Infra"] --> F1["Fase 1: Auth & Misturas"]
     F1 --> F2["Fase 2: Pontos & Faxina"]
-    F2 --> F3["Fase 3: Cervejas & Mercado"]
+    F2 --> F3["Fase 3: Caixas de Cerveja"]
     F3 --> F4["Fase 4: Funças & Frentes"]
     F4 --> F5["Fase 5: PWA & Polimento"]
 ```
@@ -572,16 +572,12 @@ flowchart LR
   - Painel de fiscalização do Halls com aprovação, reprovação e controle de omissão.
   - Tabela de penalidades progressivas configuráveis de 2 a 7 pontos no Supabase (`public.regras_quadro_pontos`) e governança do Admin.
 
-### Fase 3: Caixas de Cerveja & Frente Mercado
+### Fase 3: Gestão de Caixas de Cerveja
 - [ ] **Gestão de Caixas de Cerveja:**
   - Registro estritamente unitário (1 caixa por registro).
   - Lançamento automático (vindos dos 7 pontos) e manual (tradições: estágio, namoro, etc.).
   - Fluxo de baixa: solicitação pelo morador com aprovação do Admin ou baixa direta pelo Admin.
   - Mural de histórico transparente das caixas.
-- [ ] **Frente Mercado:**
-  - Painel de gerenciamento do Catálogo Mestre (exclusivo para membros da frente).
-  - Interface dos moradores para solicitação de itens faltantes a partir do catálogo.
-  - Lista de compras ativa com checklist para o dia de mercado.
 
 ### Fase 4: Sistema Geral de "Funças", Páginas das Frentes Organizacionais & Chats
 - [ ] **Sistema Geral de Funças:**
@@ -591,6 +587,10 @@ flowchart LR
     - Funça Geral: Veterano atribui a seu bixo, Admin atribui a qualquer morador, ou autoatribuição.
   - Painel Centralizado da Reunião Semanal para triagem coletiva de funças pendentes.
 - [ ] **Páginas e Módulos Específicos das Frentes Organizacionais:**
+  - **Frente Mercado:**
+    - Painel de gerenciamento do Catálogo Mestre (exclusivo para membros da frente).
+    - Interface dos moradores para solicitação de itens faltantes a partir do catálogo mestre.
+    - Lista de compras ativa com checklist para o dia de ida ao supermercado.
   - **Frente Financeiro ("Caixinha"):**
     - **Dashboard Mensal de Cobrança de Convidados:** Puxa os registros de `daily_meals` de todos os convidados (`role = 'externo'`) no mês, calcula o montante devido e disponibiliza envio de fatura/PIX pelo WhatsApp.
     - Painel de controle de mensalidade fixa dos moradores.
