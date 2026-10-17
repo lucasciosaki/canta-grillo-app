@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { DRIVE_URL as FALLBACK_DRIVE, ULTIMA_ATA_URL as FALLBACK_ATA } from '../config';
 
@@ -7,6 +7,7 @@ interface HouseLinks {
   ultimaAtaUrl: string | undefined;
   loading: boolean;
   refetch: () => Promise<void>;
+  refreshLinks: () => Promise<void>;
 }
 
 /**
@@ -19,7 +20,7 @@ export function useHouseLinks(): HouseLinks {
   const [ultimaAtaUrl, setUltimaAtaUrl] = useState<string | undefined>(FALLBACK_ATA);
   const [loading, setLoading] = useState(true);
 
-  const fetchLinks = async () => {
+  const fetchLinks = useCallback(async () => {
     try {
       // 1. Busca o link do Drive na tabela house_settings
       const { data: driveData, error: driveError } = await supabase
@@ -37,6 +38,7 @@ export function useHouseLinks(): HouseLinks {
         .from('atas_reuniao')
         .select('url, data_reuniao')
         .order('data_reuniao', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
@@ -48,11 +50,34 @@ export function useHouseLinks(): HouseLinks {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchLinks();
-  }, []);
 
-  return { driveUrl, ultimaAtaUrl, loading, refetch: fetchLinks };
+    // Sincronização em tempo real para house_settings e atas_reuniao
+    const channel = supabase
+      .channel('house-links-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'house_settings' },
+        () => {
+          fetchLinks();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'atas_reuniao' },
+        () => {
+          fetchLinks();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchLinks]);
+
+  return { driveUrl, ultimaAtaUrl, loading, refetch: fetchLinks, refreshLinks: fetchLinks };
 }

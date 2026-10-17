@@ -48,9 +48,11 @@ flowchart TD
    - Novos cadastros são criados com status `ativo: false` até aprovação expressa por um Administrador na tela de aprovações.
    - O `AuthGuard` intercepta a renderização antes da Home: exibe `LoadingScreen` durante a inicialização, bloqueia moradores pendentes em `PendingApprovalScreen` com botão de re-checagem instantânea, e só libera a Home e dados da casa para perfis confirmados (`ativo: true`).
    - Possui timeout de segurança (2.5s) e fallback automático para evitar travamentos de tela em conexões lentas ou tabelas com RLS.
-5. **Proteção de Links e Segredos via Supabase (`house_settings`):**
-   - Links privados da casa (como a pasta do Google Drive e URLs de Atas) **não** são embutidos como constantes estáticas no bundle JS (`VITE_DRIVE_URL`), eliminando risco de vazamento por inspeção de código no cliente.
+5. **Proteção de Links e Gestão de Atas via Supabase (`house_settings` e `atas_reuniao`):**
+   - Links privados da casa (pasta do Google Drive e URLs de Atas) **não** são embutidos como constantes estáticas no bundle JS (`VITE_DRIVE_URL`), eliminando risco de vazamento por inspeção de código no cliente.
    - São consultados dinamicamente no Supabase via hook `useHouseLinks` nas tabelas `public.house_settings` e `public.atas_reuniao`, protegidas por RLS.
+   - Sincronização em tempo real via Supabase Realtime para refletir imediatamente novas atas ou atualizações do link do Drive.
+   - Interface completa `AtasScreen.tsx` com histórico de atas, badge de "Última Ata" (maior data de reunião), formulário de publicação/edição para qualquer morador ativo ou Admin, e governança de edição do Drive restrita ao Administrador.
 6. **PWA Standalone:** Execução fora do navegador convencional no iOS e Android, sem barra de navegação do browser, com splash screen própria e ícone na tela de início.
 7. **Upload Otimizado:** Compressão no cliente (*client-side*) antes do upload para o Supabase Storage, limitando fotos a ~800KB e formato WebP.
 8. **Comunicação em Tempo Real Nativa:** Uso do Supabase Realtime (WebSockets Postgres Changes e Broadcast) para os chats de frentes, discussões de pontos e marcação instantânea da folha de misturas.
@@ -480,6 +482,16 @@ classDiagram
       - `market_catalog`: Leitura liberada para todos os moradores ativos (para viabilizar pedidos de reposição). Inserção, edição e exclusão de itens do catálogo oficial exclusivas de integrantes da Frente Mercado (`public.is_front_member_by_slug('mercado')`) ou administradores.
       - `solicitacoes_mercado`: Qualquer morador ativo pode solicitar produtos do catálogo mestre (`status = 'solicitado'`). Atualização do status de compra (`status = 'comprado'`) exclusiva de integrantes da Frente Mercado ou administradores.
     * **Realtime:** Publicação `supabase_realtime` habilitada para `mensagens_frente`, `funcas`, `funca_atribuicoes`, `dogs_refeicoes_diarias`, `market_catalog` e `solicitacoes_mercado`.
+14. **Atas de Reunião & Link do Drive (`ATAS_REUNIAO` e `HOUSE_SETTINGS` - Supabase RLS — RN12):**
+    * **`ATAS_REUNIAO`:**
+      - Leitura (`SELECT`), publicação (`INSERT`), edição (`UPDATE`) e exclusão (`DELETE`) permitidas para qualquer morador ativo ou Administrador (`public.is_admin() OR public.is_active_morador()`).
+      - Usuários externos e anônimos têm acesso estritamente bloqueado.
+      - A ordenação para derivação da "Última Ata" utiliza `ORDER BY data_reuniao DESC, created_at DESC LIMIT 1`.
+      - Identificação do publicador estritamente por apelido da república.
+    * **`HOUSE_SETTINGS` (Link do Drive):**
+      - Leitura (`SELECT`) permitida para qualquer morador ativo ou Administrador (`public.is_admin() OR public.is_active_morador()`).
+      - Inserção, edição e exclusão (`ALL`) restritas exclusivamente ao Administrador (`public.is_admin()`).
+    * **Realtime:** Publicação `supabase_realtime` habilitada para `atas_reuniao` e `house_settings`.
 
 ---
 
@@ -518,7 +530,8 @@ canta-grillo-app/
 │   │   ├── cervejas/       # Mural de caixas unitárias, solicitações de baixa
 │   │   ├── frentes/        # Chats de frentes, chamados rápidos, reunião semanal
 │   │   ├── mercado/        # Catálogo mestre, sugestão restrita, lista de compras
-│   │   └── dogs/           # Controle diário de refeições (manhã/noite) e remédios
+│   │   ├── dogs/           # Controle diário de refeições (manhã/noite) e remédios
+│   │   └── atas/           # Histórico de atas de reunião e gestão do link do Drive (RN12)
 │   ├── hooks/              # Hooks customizados reutilizáveis (useAuth, usePWA, useRealtime)
 │   ├── lib/                # Configurações de terceiros (supabaseClient.ts, imageCompression.ts)
 │   ├── services/           # Chamadas diretas de banco e storage
@@ -574,7 +587,10 @@ flowchart LR
 - [x] **Fluxo de Autenticação e Cadastro Completo:** Tela `AuthScreen.tsx` com alternância entre login e cadastro de novo morador (Nome, Apelido, Geração, Quarto dinâmico do banco, E-mail, Senha).
 - [x] **Gate de Aprovação de Novos Moradores:** Novos cadastros são gerados com `ativo: false`; tela administrativa `AprovacoesScreen.tsx` para aprovação ou exclusão pelo Admin.
 - [x] **Route Guard & Loading Screen:** Componente `AuthGuard.tsx` com splash screen minimalista (`LoadingScreen.tsx`), timeout de segurança de 2.5s contra travamentos, e tela de espera (`PendingApprovalScreen.tsx`) com botão de re-checagem instantânea.
-- [x] **Links Protegidos da Casa:** Hook `useHouseLinks.ts` buscando `drive_url` em `public.house_settings` e a ata mais recente em `public.atas_reuniao`, blindados por RLS para não vazar no bundle client-side.
+- [x] **Links Protegidos da Casa & Gestão de Atas (RN12):**
+  - Hook `useHouseLinks.ts` buscando `drive_url` em `public.house_settings` e a ata mais recente em `public.atas_reuniao`, blindados por RLS e sincronizados via Supabase Realtime.
+  - Tela `AtasScreen.tsx` para publicação, edição, exclusão e histórico completo de atas com exibição estrita por apelido.
+  - Governança de configuração do link do Google Drive da república com `upsert` exclusivo para Administradores.
 - [x] **Gestão e Alocação de Moradores nas Frentes:** Interface `FrentesScreen.tsx` com acesso geral e privilégios de Admin para vincular moradores às 10 frentes, nomear co-líderes (`is_lider`), alternar liderança e remover integrantes no Supabase (`public.front_members`).
 - [x] **Folha de Misturas Digital Conectada ao Supabase:**
   - Busca lista real de moradores da tabela `public.profiles` (`ativo = true`).

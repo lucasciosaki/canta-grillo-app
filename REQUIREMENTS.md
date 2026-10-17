@@ -144,8 +144,8 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 ### 3.7 Comunicação, Mural e Eventos
 - Quadro de avisos importantes.
 - Calendário de eventos, reuniões de rep e visitas.
-- **Ata da Última Reunião:** qualquer morador ativo da casa pode publicar no app o link da ata mais recente (documento hospedado externamente, ex.: Google Docs). Todos os moradores acessam esse link por um botão na tela inicial. Detalhes na RN12.
-- **Link do Drive da República:** botão fixo na tela inicial que abre a pasta compartilhada da casa. O endereço é estático, definido na configuração do app, e não é editável pelos usuários.
+- **Ata da Última Reunião & Histórico:** Qualquer morador ativo ou Administrador da casa pode publicar, editar ou excluir atas de reunião no app (com link hospedado externamente, ex.: Google Docs). Todos os moradores acessam a última ata na tela inicial e o histórico completo na tela de Atas. Detalhes na RN12.
+- **Link do Drive da República:** Botão na tela inicial e na tela de Atas que abre a pasta compartilhada da casa. O link é protegido no Supabase (`house_settings`), legível por moradores ativos e editável exclusivamente pelo Administrador.
 
 ---
 
@@ -283,10 +283,11 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - **Identificação Estrita por Apelido:** Todas as mensagens exibem o **apelido** do autor e destacam badge de Líder (`⭐`) caso o autor possua `is_lider = true` naquela frente.
 
 ### RN12 - Ata da Última Reunião e Link do Drive
-- Qualquer morador ativo da república pode publicar uma ata de reunião, informando a **data da reunião**, o **link** (URL `http`/`https` válida) e, opcionalmente, um título da reunião.
-- A "última ata" é sempre a de **maior data de reunião**; as anteriores permanecem no histórico, sem exclusão automática.
-- O link do Drive da República é armazenado de forma protegida na tabela `house_settings` do Supabase (com fallback para variável de ambiente durante desenvolvimento), garantindo que a URL privada da pasta não fique exposta no código client-side baixado pelo navegador.
-- Ambos os links abrem em uma nova aba/janela do navegador, fora do app.
+- **Publicação, Edição e Exclusão de Atas (`public.atas_reuniao`):** Qualquer morador ativo da república ou Administrador (`public.is_admin() OR public.is_active_morador()`) pode publicar, editar ou excluir uma ata de reunião, informando a **data da reunião** (`DATE`, obrigatória), o **link** (URL `http`/`https` válida) e, opcionalmente, o **título** da reunião.
+- **Derivação da "Última Ata":** A "última ata" é sempre a de **maior data de reunião** (`ORDER BY data_reuniao DESC, created_at DESC LIMIT 1`); as anteriores permanecem no histórico acessível aos moradores na tela `Atas & Links da Casa`.
+- **Exibição Estrita de Apelido:** No histórico de atas, o morador que publicou a ata é identificado estritamente pelo seu **apelido** da república (ou primeiro nome em fallback).
+- **Link do Drive da República (`public.house_settings`):** Armazenado de forma protegida na tabela `house_settings` (`chave = 'drive_url'`). Moradores ativos têm permissão de leitura (`SELECT`), enquanto a alteração (`INSERT`, `UPDATE`, `DELETE`) é restrita **exclusivamente ao Administrador** (`public.is_admin()`).
+- **Abertura em Nova Aba:** Ambos os links abrem em uma nova aba/janela do navegador (`target="_blank" rel="noopener noreferrer"`), fora do app.
 
 ### RN13 - Autenticação, Aprovação de Moradores e Políticas RLS (Database-First)
 - **Criação de Contas:** Clientes não possuem permissão de `INSERT` na tabela `public.profiles`. O registro ocorre exclusivamente via gatilho de banco de dados (`handle_new_user()` em `SECURITY DEFINER`), garantindo que todo novo morador nasça com `ativo = false` e `role = 'morador'`.
