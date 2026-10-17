@@ -201,6 +201,16 @@ describe('Testes Automatizados de Segurança: Supabase Auth & RLS Roles', () => 
 
       assert.equal(data?.apelido, novoApelido);
     });
+
+    it('morador comum não deve conseguir alterar a própria geração após cadastro (blindagem veterano/bixo)', async () => {
+      const { error } = await testUserClient
+        .from('profiles')
+        .update({ geracao: '020' })
+        .eq('id', testUserId);
+
+      assert.notEqual(error, null, 'PostgreSQL trigger protect_profile_roles deve rejeitar alteração de geração por morador comum');
+      assert.match(error?.message || '', /geração/);
+    });
   });
 
   describe('4. Blindagem da Gestão de Frentes (front_members)', () => {

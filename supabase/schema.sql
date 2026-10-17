@@ -487,7 +487,7 @@ USING (public.is_admin());
 DROP POLICY IF EXISTS "Permitir insercao de perfil no cadastro" ON public.profiles;
 DROP POLICY IF EXISTS "Cadastro de perfil seguro" ON public.profiles;
 
--- TRIGGER DE PROTEÇÃO DE COLUNAS CRÍTICAS (ativo e role)
+-- TRIGGER DE PROTEÇÃO DE COLUNAS CRÍTICAS (ativo, role e geracao)
 -- Permite edição direta pelo painel do Supabase (SQL Editor / Table Editor, onde auth.uid() é NULL)
 -- ou via service_role, bloqueando apenas usuários comuns autenticados via cliente (PostgREST).
 CREATE OR REPLACE FUNCTION public.protect_profile_roles()
@@ -501,6 +501,10 @@ BEGIN
     -- Morador comum não pode alterar o próprio 'role' (auto-promoção para admin)
     IF NEW.role IS DISTINCT FROM OLD.role THEN
       RAISE EXCEPTION 'Apenas administradores podem alterar o cargo (role) de um usuário.';
+    END IF;
+    -- Morador comum não pode alterar a própria 'geracao' após o cadastro (proteção de hierarquia Veterano/Bixo)
+    IF OLD.geracao IS NOT NULL AND NEW.geracao IS DISTINCT FROM OLD.geracao THEN
+      RAISE EXCEPTION 'Apenas administradores podem alterar a geração de um morador.';
     END IF;
   END IF;
   RETURN NEW;
@@ -1581,3 +1585,64 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ==============================================================================
+-- 19. BUCKET DE AVATARS E POLÍTICAS RLS (Supabase Storage)
+-- ==============================================================================
+
+-- 1. Criação do bucket público de fotos de perfil (avatars)
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- 2. Habilitação de RLS em storage.objects
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- 3. Leitura pública de fotos de perfil
+DROP POLICY IF EXISTS "Avatars sao publicamente acessiveis" ON storage.objects;
+CREATE POLICY "Avatars sao publicamente acessiveis"
+ON storage.objects FOR SELECT
+TO anon, authenticated
+USING (bucket_id = 'avatars');
+
+-- 4. Morador autenticado pode fazer upload apenas do seu próprio avatar (ou Admin pode fazer upload de qualquer um)
+DROP POLICY IF EXISTS "Usuarios autenticados podem fazer upload do seu proprio avatar" ON storage.objects;
+CREATE POLICY "Usuarios autenticados podem fazer upload do seu proprio avatar"
+ON storage.objects FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id = 'avatars' 
+  AND (
+    public.is_admin() 
+    OR name LIKE 'avatar_' || auth.uid() || '_%'
+    OR (storage.foldername(name))[1] = auth.uid()::text
+  )
+);
+
+-- 5. Morador autenticado pode atualizar seu próprio avatar (ou Admin pode atualizar)
+DROP POLICY IF EXISTS "Usuarios autenticados podem atualizar seu proprio avatar" ON storage.objects;
+CREATE POLICY "Usuarios autenticados podem atualizar seu proprio avatar"
+ON storage.objects FOR UPDATE
+TO authenticated
+USING (
+  bucket_id = 'avatars' 
+  AND (
+    public.is_admin() 
+    OR name LIKE 'avatar_' || auth.uid() || '_%'
+    OR (storage.foldername(name))[1] = auth.uid()::text
+  )
+);
+
+-- 6. Morador autenticado pode deletar seu próprio avatar (ou Admin pode deletar)
+DROP POLICY IF EXISTS "Usuarios autenticados podem deletar seu proprio avatar" ON storage.objects;
+CREATE POLICY "Usuarios autenticados podem deletar seu proprio avatar"
+ON storage.objects FOR DELETE
+TO authenticated
+USING (
+  bucket_id = 'avatars' 
+  AND (
+    public.is_admin() 
+    OR name LIKE 'avatar_' || auth.uid() || '_%'
+    OR (storage.foldername(name))[1] = auth.uid()::text
+  )
+);

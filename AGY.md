@@ -421,9 +421,18 @@ classDiagram
    * **`PROFILES`:** A tabela permanece fechada contra `INSERT` via API client-side. A inserção ocorre unicamente via trigger `handle_new_user()` (`SECURITY DEFINER`) cravando `ativo = FALSE` e `role = 'morador'`.
    * **Políticas RLS em `PROFILES`:**
      - `SELECT`: Permitido a todos os usuários autenticados (`authenticated`).
-     - `UPDATE`: Administrador pode atualizar qualquer perfil (`public.is_admin()`); morador comum atualiza apenas seus próprios dados cadastrais. Gatilho de segurança `trg_protect_profile_roles` impede estritamente que não-administradores alterem as colunas `ativo` e `role`.
+     - `UPDATE`: Administrador pode atualizar qualquer perfil (`public.is_admin()`); morador comum atualiza apenas seus próprios dados cadastrais permitidos (apelido, nome, quarto, avatar_url). Gatilho de segurança `trg_protect_profile_roles` (`public.protect_profile_roles()`) impede estritamente que não-administradores alterem as colunas `ativo`, `role` e `geracao` (blindando a hierarquia Veterano -> Bixo nas Funças).
      - `DELETE`: Exclusivo do Administrador (`public.is_admin()`).
-   * **`ROOMS`:** Leitura pública (`anon` e `authenticated`) para permitir a listagem de quartos no fluxo de cadastro de novo morador.
+   * **`ROOMS`:** Leitura pública (`anon` e `authenticated`) para permitir a listagem de quartos no fluxo de cadastro de novo morador e seleção de quarto no perfil.
+   * **Foto de Perfil & Supabase Storage (`avatars`):**
+     - Bucket público `avatars` no Supabase Storage.
+     - Políticas RLS em `storage.objects`: `SELECT` público; `INSERT`, `UPDATE` e `DELETE` restritos ao titular autenticado (`name LIKE 'avatar_' || auth.uid() || '_%'`) ou Administradores (`public.is_admin()`).
+     - Compressão inteligente no cliente (center crop 512x512 JPEG 85%) para economia de dados e carregamento instantâneo no mobile, com fallback resiliente para Data URL base64.
+   * **Tela "Meu Perfil & Quarto" (`MeuPerfilScreen.tsx`):** Acessível pela aba `Casa` e clicando no cabeçalho `02X · Quarto Y` da `Home`. Permite ao morador ativo configurar/remover sua Foto de Perfil, editar seu Apelido na Rep, Nome Completo e Quarto Atual (`quarto_id`), mantendo a Geração travada para morador comum (editável apenas por Administradores).
+   * **Central de Gestão de Membros da Casa (`AprovacoesScreen.tsx`):** Exclusiva para Administradores, com 3 abas operacionais com fotos dos membros:
+     - **Pendentes (`ativo = false`):** Aprovação (`ativo = true`) e recusa (`DELETE`) de novos moradores.
+     - **Moradores Ativos (`role IN ('morador', 'admin') AND ativo = true`):** Lista todos os membros, permitindo editar apelido, nome, geração, quarto, remover foto inadequada, promover/rebaixar (`morador` <-> `admin`), desativar acesso (`ativo = false`) ou remover conta. Blindado com regras de auto-preservação para impedir auto-rebaixamento, auto-desativação ou auto-exclusão do Admin logado.
+     - **Convidados Externos (`role = 'externo'`):** Gestão de agregados da folha de misturas, telefone/WhatsApp direto, ativação/desativação e edição cadastral.
 7. **Governança de Frentes (`FRONT_MEMBERS`):**
    * **`SELECT`:** Aberto para todos os moradores autenticados consultarem as comissões.
    * **`INSERT`, `UPDATE` e `DELETE`:** Operações exclusivas de Administradores (`public.is_admin()`), protegendo a alocação de moradores e alternância de co-liderança (`is_lider`). A política de `INSERT` valida adicionalmente que o morador vinculado é um morador ativo da república (`role IN ('morador', 'admin') AND ativo = true`), bloqueando a vinculação de convidados externos (`role = 'externo'`).

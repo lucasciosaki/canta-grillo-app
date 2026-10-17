@@ -1,128 +1,994 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import type { Profile } from '../../types/auth';
+import { useAuth } from '../../contexts/AuthContext';
+import type { Profile, Room, UserRole } from '../../types/auth';
 import { PageTitle, Tag } from '../../components/ui';
-import { Check, X } from 'lucide-react';
+import {
+  validarAcoesAdmin,
+  validarEdicaoMoradorAdmin,
+  validarEdicaoConvidadoAdmin,
+} from '../perfil/perfilLogic';
+import {
+  Check,
+  X,
+  Edit2,
+  Users,
+  Clock,
+  UserCheck,
+  UserX,
+  AlertCircle,
+  Phone,
+  Shield,
+  Trash2,
+  Home,
+} from 'lucide-react';
 
 interface AprovacoesScreenProps {
   onBack: () => void;
 }
 
+type TabMode = 'pendentes' | 'moradores' | 'convidados';
+
 export const AprovacoesScreen: React.FC<AprovacoesScreenProps> = ({ onBack }) => {
+  const { user } = useAuth();
+
+  const [activeTab, setActiveTab] = useState<TabMode>('pendentes');
   const [pendentes, setPendentes] = useState<Profile[]>([]);
+  const [moradores, setMoradores] = useState<Profile[]>([]);
+  const [convidados, setConvidados] = useState<Profile[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const carregarPendentes = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*, quarto:rooms(*)')
-      .eq('ativo', false)
-      .order('created_at', { ascending: false });
+  const [editingMorador, setEditingMorador] = useState<Profile | null>(null);
+  const [editApelido, setEditApelido] = useState('');
+  const [editNome, setEditNome] = useState('');
+  const [editGeracao, setEditGeracao] = useState('');
+  const [editQuartoId, setEditQuartoId] = useState<string>('');
+  const [editRole, setEditRole] = useState<UserRole>('morador');
+  const [editAvatarUrl, setEditAvatarUrl] = useState<string | null>(null);
 
-    if (!error && data) {
-      setPendentes(data as Profile[]);
-    }
-    setLoading(false);
-  };
+  const [editingConvidado, setEditingConvidado] = useState<Profile | null>(null);
+  const [editConvApelido, setEditConvApelido] = useState('');
+  const [editConvNome, setEditConvNome] = useState('');
+  const [editConvTelefone, setEditConvTelefone] = useState('');
 
+  // Carrega lista de quartos
   useEffect(() => {
-    carregarPendentes();
+    supabase
+      .from('rooms')
+      .select('*')
+      .order('nome')
+      .then(({ data }) => {
+        if (data) setRooms(data);
+      });
   }, []);
 
-  const handleAprovar = async (id: string) => {
-    setActionLoading(id);
-    const { error } = await supabase
-      .from('profiles')
-      .update({ ativo: true })
-      .eq('id', id);
+  // Carrega todas as 3 listas
+  const carregarDados = useCallback(async () => {
+    setLoading(true);
+    setErrorMessage(null);
 
-    if (!error) {
-      setPendentes((prev) => prev.filter((p) => p.id !== id));
-    } else {
-      alert('Erro ao aprovar morador: ' + error.message);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*, quarto:rooms(*)')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        const perfis = data as Profile[];
+
+        // 1. Pendentes: qualquer perfil com ativo = false (exceto se for externo desativado por admin, ou cadastros pendentes)
+        const pend = perfis.filter((p) => p.ativo === false && p.role !== 'externo');
+        setPendentes(pend);
+
+        // 2. Moradores Ativos: role IN ('morador', 'admin') e ativo = true
+        const morad = perfis
+          .filter((p) => (p.role === 'morador' || p.role === 'admin') && p.ativo === true)
+          .sort((a, b) => {
+            const nomeA = (a.apelido || a.nome).toLowerCase();
+            const nomeB = (b.apelido || b.nome).toLowerCase();
+            return nomeA.localeCompare(nomeB);
+          });
+        setMoradores(morad);
+
+        // 3. Convidados Externos: role = 'externo'
+        const conv = perfis
+          .filter((p) => p.role === 'externo')
+          .sort((a, b) => {
+            if (a.ativo !== b.ativo) return a.ativo ? -1 : 1;
+            const nomeA = (a.apelido || a.nome).toLowerCase();
+            const nomeB = (b.apelido || b.nome).toLowerCase();
+            return nomeA.localeCompare(nomeB);
+          });
+        setConvidados(conv);
+      }
+    } catch (err: any) {
+      console.error('[AprovacoesScreen] Erro ao carregar dados:', err);
+      setErrorMessage(err.message || 'Erro ao carregar lista de membros.');
+    } finally {
+      setLoading(false);
     }
-    setActionLoading(null);
+  }, []);
+
+  useEffect(() => {
+    carregarDados();
+  }, [carregarDados]);
+
+  const showSuccess = (msg: string) => {
+    setSuccessMessage(msg);
+    setTimeout(() => setSuccessMessage(null), 3500);
   };
 
-  const handleRecusar = async (id: string) => {
+  // ----------------------------------------------------
+  // AÇÕES: PENDENTES
+  // ----------------------------------------------------
+  const handleAprovar = async (id: string) => {
+    setActionLoading(id);
+    setErrorMessage(null);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ ativo: true, updated_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      showSuccess('Morador aprovado com sucesso!');
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage('Erro ao aprovar morador: ' + (err.message || err));
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRecusarPendente = async (id: string) => {
     if (!confirm('Deseja recusar e remover esta solicitação de morador?')) return;
     setActionLoading(id);
-    const { error } = await supabase.from('profiles').delete().eq('id', id);
+    setErrorMessage(null);
+    try {
+      const { error } = await supabase.from('profiles').delete().eq('id', id);
+      if (error) throw error;
 
-    if (!error) {
-      setPendentes((prev) => prev.filter((p) => p.id !== id));
-    } else {
-      alert('Erro ao recusar solicitação: ' + error.message);
+      showSuccess('Solicitação recusada e removida.');
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage('Erro ao recusar solicitação: ' + (err.message || err));
+    } finally {
+      setActionLoading(null);
     }
-    setActionLoading(null);
+  };
+
+  // ----------------------------------------------------
+  // AÇÕES: MORADORES ATIVOS
+  // ----------------------------------------------------
+  const handleAbrirEdicaoMorador = (m: Profile) => {
+    setEditingMorador(m);
+    setEditApelido(m.apelido || '');
+    setEditNome(m.nome || '');
+    setEditGeracao(m.geracao || '025');
+    setEditQuartoId(m.quarto_id || (rooms[0]?.id || ''));
+    setEditRole(m.role || 'morador');
+    setEditAvatarUrl(m.avatar_url || null);
+  };
+
+  const handleSalvarEdicaoMorador = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMorador) return;
+
+    setErrorMessage(null);
+    setActionLoading(editingMorador.id);
+
+    try {
+      const payload = validarEdicaoMoradorAdmin({
+        apelido: editApelido,
+        nome: editNome,
+        geracao: editGeracao,
+        quarto_id: editQuartoId || null,
+        role: editRole,
+        avatar_url: editAvatarUrl,
+      });
+
+      // Validação de segurança se for o próprio admin logado
+      if (user?.id) {
+        const check = validarAcoesAdmin({
+          adminLogadoId: user.id,
+          alvoId: editingMorador.id,
+          acao: editRole !== 'admin' ? 'rebaixar' : 'editar',
+          novoRole: editRole,
+        });
+
+        if (!check.permitido) {
+          throw new Error(check.motivo);
+        }
+      }
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          apelido: payload.apelido,
+          nome: payload.nome,
+          geracao: payload.geracao,
+          quarto_id: payload.quarto_id,
+          role: payload.role,
+          avatar_url: editAvatarUrl,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', editingMorador.id);
+
+      if (error) throw error;
+
+      showSuccess('Dados do morador atualizados com sucesso!');
+      setEditingMorador(null);
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao atualizar morador.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDesativarMorador = async (m: Profile) => {
+    if (user?.id) {
+      const check = validarAcoesAdmin({
+        adminLogadoId: user.id,
+        alvoId: m.id,
+        acao: 'desativar',
+        novoAtivo: false,
+      });
+      if (!check.permitido) {
+        alert(check.motivo);
+        return;
+      }
+    }
+
+    const apelidoExibicao = m.apelido || m.nome;
+    if (
+      !confirm(
+        `Tem certeza que deseja desativar o acesso de ${apelidoExibicao}? O morador não conseguirá mais entrar no app.`
+      )
+    ) {
+      return;
+    }
+
+    setActionLoading(m.id);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ ativo: false, updated_at: new Date().toISOString() })
+        .eq('id', m.id);
+
+      if (error) throw error;
+
+      showSuccess(`Acesso de ${apelidoExibicao} desativado.`);
+      setEditingMorador(null);
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao desativar morador.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRemoverMorador = async (m: Profile) => {
+    if (user?.id) {
+      const check = validarAcoesAdmin({
+        adminLogadoId: user.id,
+        alvoId: m.id,
+        acao: 'excluir',
+      });
+      if (!check.permitido) {
+        alert(check.motivo);
+        return;
+      }
+    }
+
+    const apelidoExibicao = m.apelido || m.nome;
+    if (
+      !confirm(
+        `ATENÇÃO: Deseja excluir permanentemente o cadastro de ${apelidoExibicao}? Esta ação não pode ser desfeita.`
+      )
+    ) {
+      return;
+    }
+
+    setActionLoading(m.id);
+    try {
+      const { error } = await supabase.from('profiles').delete().eq('id', m.id);
+      if (error) throw error;
+
+      showSuccess(`Conta de ${apelidoExibicao} removida.`);
+      setEditingMorador(null);
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao remover morador.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // ----------------------------------------------------
+  // AÇÕES: CONVIDADOS EXTERNOS
+  // ----------------------------------------------------
+  const handleToggleAtivoConvidado = async (conv: Profile) => {
+    const novoStatus = !conv.ativo;
+    setActionLoading(conv.id);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ ativo: novoStatus, updated_at: new Date().toISOString() })
+        .eq('id', conv.id);
+
+      if (error) throw error;
+
+      showSuccess(
+        `Convidado ${conv.apelido || conv.nome} ${novoStatus ? 'ativado' : 'desativado'}.`
+      );
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao atualizar status do convidado.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleAbrirEdicaoConvidado = (conv: Profile) => {
+    setEditingConvidado(conv);
+    setEditConvApelido(conv.apelido || '');
+    setEditConvNome(conv.nome || '');
+    setEditConvTelefone(conv.telefone_contato || '');
+  };
+
+  const handleSalvarEdicaoConvidado = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingConvidado) return;
+
+    setActionLoading(editingConvidado.id);
+    try {
+      const payload = validarEdicaoConvidadoAdmin({
+        apelido: editConvApelido,
+        nome: editConvNome,
+        telefone_contato: editConvTelefone,
+      });
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          apelido: payload.apelido,
+          nome: payload.nome,
+          telefone_contato: payload.telefone_contato,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', editingConvidado.id);
+
+      if (error) throw error;
+
+      showSuccess('Convidado atualizado com sucesso!');
+      setEditingConvidado(null);
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao atualizar convidado.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRemoverConvidado = async (conv: Profile) => {
+    if (!confirm(`Deseja remover o convidado ${conv.apelido || conv.nome}?`)) return;
+
+    setActionLoading(conv.id);
+    try {
+      const { error } = await supabase.from('profiles').delete().eq('id', conv.id);
+      if (error) throw error;
+
+      showSuccess('Convidado removido.');
+      await carregarDados();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Erro ao remover convidado.');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   return (
     <>
       <PageTitle
-        title="Aprovações de Moradores"
-        hint="Controle de acesso à casa (exclusivo Admin)"
+        title="Gestão de Membros"
+        hint="Controle de acesso, moradores e convidados (Admin)"
         back={{ label: 'Casa', onClick: onBack }}
       />
 
-      {loading ? (
-        <p className="text-xs text-muted py-6 text-center">Buscando cadastros pendentes...</p>
-      ) : pendentes.length === 0 ? (
-        <div className="py-12 text-center">
-          <div className="w-10 h-10 rounded-full bg-mint text-forest flex items-center justify-center mx-auto mb-3">
-            <Check className="w-5 h-5" />
-          </div>
-          <h4 className="text-base font-semibold text-ink">Nenhuma solicitação pendente</h4>
-          <p className="text-xs text-muted mt-1 max-w-xs mx-auto">
-            Todos os moradores cadastrados já foram aprovados. Novos cadastros aparecerão aqui.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-xs font-medium text-muted">
-            {pendentes.length} {pendentes.length === 1 ? 'morador aguardando' : 'moradores aguardando'}
-          </p>
+      {/* Seletor de 3 Abas */}
+      <div className="flex border-b border-line mb-5">
+        <button
+          onClick={() => setActiveTab('pendentes')}
+          className={`flex-1 pb-3 text-xs font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-all cursor-pointer ${
+            activeTab === 'pendentes'
+              ? 'border-forest text-forest'
+              : 'border-transparent text-muted hover:text-ink'
+          }`}
+        >
+          <Clock className="w-3.5 h-3.5" />
+          <span>Pendentes ({pendentes.length})</span>
+        </button>
 
-          {pendentes.map((p) => (
-            <div
-              key={p.id}
-              className="p-4 rounded-xl border border-line bg-surface space-y-3"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h4 className="text-sm font-semibold text-ink">
-                    {p.apelido || p.nome}
-                  </h4>
-                  <p className="text-xs text-muted mt-0.5">
-                    Geração {p.geracao || '025'} · {p.quarto?.nome || 'Quarto não definido'}
+        <button
+          onClick={() => setActiveTab('moradores')}
+          className={`flex-1 pb-3 text-xs font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-all cursor-pointer ${
+            activeTab === 'moradores'
+              ? 'border-forest text-forest'
+              : 'border-transparent text-muted hover:text-ink'
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          <span>Moradores ({moradores.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('convidados')}
+          className={`flex-1 pb-3 text-xs font-semibold flex items-center justify-center gap-1.5 border-b-2 transition-all cursor-pointer ${
+            activeTab === 'convidados'
+              ? 'border-forest text-forest'
+              : 'border-transparent text-muted hover:text-ink'
+          }`}
+        >
+          <Phone className="w-3.5 h-3.5" />
+          <span>Convidados ({convidados.length})</span>
+        </button>
+      </div>
+
+      {successMessage && (
+        <div className="mb-4 p-3 rounded-xl bg-mint/50 border border-mint text-forest text-xs font-semibold flex items-center gap-2">
+          <Check className="w-4 h-4 shrink-0" />
+          <span>{successMessage}</span>
+        </div>
+      )}
+
+      {errorMessage && (
+        <div className="mb-4 p-3 rounded-xl bg-clay-tint border border-clay/30 text-clay text-xs font-semibold flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-xs text-muted py-8 text-center">Buscando cadastros no Supabase...</p>
+      ) : (
+        <>
+          {/* ========================================================== */}
+          {/* ABA 1: PENDENTES */}
+          {/* ========================================================== */}
+          {activeTab === 'pendentes' && (
+            <div className="space-y-3">
+              {pendentes.length === 0 ? (
+                <div className="py-12 text-center">
+                  <div className="w-10 h-10 rounded-full bg-mint text-forest flex items-center justify-center mx-auto mb-3">
+                    <Check className="w-5 h-5" />
+                  </div>
+                  <h4 className="text-base font-semibold text-ink">Nenhuma solicitação pendente</h4>
+                  <p className="text-xs text-muted mt-1 max-w-xs mx-auto">
+                    Todos os moradores cadastrados já foram aprovados. Novos cadastros aparecerão aqui.
                   </p>
-                  <p className="text-[11px] text-muted/80 font-mono mt-0.5">{p.email}</p>
                 </div>
-                <Tag tone="alert">Pendente</Tag>
+              ) : (
+                pendentes.map((p) => (
+                  <div
+                    key={p.id}
+                    className="p-4 rounded-xl border border-line bg-surface space-y-3 shadow-2xs"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {p.avatar_url ? (
+                          <img
+                            src={p.avatar_url}
+                            alt={p.apelido || p.nome}
+                            className="w-10 h-10 rounded-full object-cover shrink-0 border border-line"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-mint text-forest font-bold text-sm flex items-center justify-center shrink-0">
+                            {(p.apelido || p.nome).charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-bold text-ink">
+                            {p.apelido || p.nome}
+                          </h4>
+                          <p className="text-xs text-muted mt-0.5">
+                            Nome civil: {p.nome}
+                          </p>
+                          <p className="text-xs text-muted mt-0.5">
+                            Geração {p.geracao || '025'} · {p.quarto?.nome || 'Quarto não definido'}
+                          </p>
+                          <p className="text-[11px] text-muted/80 font-mono mt-0.5">{p.email}</p>
+                        </div>
+                      </div>
+                      <Tag tone="alert">Pendente</Tag>
+                    </div>
+
+                    <div className="flex gap-2 pt-1 border-t border-line">
+                      <button
+                        onClick={() => handleAprovar(p.id)}
+                        disabled={actionLoading === p.id}
+                        className="flex-1 py-2 px-3 rounded-lg bg-forest hover:bg-forest-dark text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        {actionLoading === p.id ? 'Aprovando...' : 'Aprovar Morador'}
+                      </button>
+
+                      <button
+                        onClick={() => handleRecusarPendente(p.id)}
+                        disabled={actionLoading === p.id}
+                        className="py-2 px-3 rounded-lg border border-line bg-paper hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center justify-center gap-1 transition-colors disabled:opacity-50"
+                      >
+                        <X className="w-3.5 h-3.5" /> Recusar
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* ========================================================== */}
+          {/* ABA 2: MORADORES ATIVOS */}
+          {/* ========================================================== */}
+          {activeTab === 'moradores' && (
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-muted">
+                {moradores.length} {moradores.length === 1 ? 'morador ativo' : 'moradores ativos'} na república
+              </p>
+
+              {moradores.map((m) => {
+                const isProprio = m.id === user?.id;
+                const inicial = (m.apelido || m.nome).charAt(0).toUpperCase();
+
+                return (
+                  <div
+                    key={m.id}
+                    className="p-4 rounded-xl border border-line bg-surface flex items-center justify-between gap-3 shadow-2xs"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {m.avatar_url ? (
+                        <img
+                          src={m.avatar_url}
+                          alt={m.apelido || m.nome}
+                          className="w-10 h-10 rounded-full object-cover shrink-0 border border-line shadow-2xs"
+                        />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-mint text-forest font-bold text-sm flex items-center justify-center shrink-0">
+                          {inicial}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-sm font-bold text-ink truncate">
+                            {m.apelido || m.nome}
+                          </h4>
+                          {isProprio && (
+                            <span className="text-[10px] font-semibold text-muted bg-line px-1.5 py-0.5 rounded">
+                              Você
+                            </span>
+                          )}
+                          <Tag tone={m.role === 'admin' ? 'green' : 'neutral'}>
+                            {m.role === 'admin' ? 'Admin' : 'Morador'}
+                          </Tag>
+                        </div>
+                        <p className="text-xs text-muted truncate mt-0.5">
+                          {m.nome} · 0{m.geracao ? m.geracao.replace(/^0+/, '') : '25'}
+                        </p>
+                        <p className="text-[11px] text-muted/80 flex items-center gap-1 mt-0.5 truncate">
+                          <Home className="w-3 h-3 text-forest shrink-0" />
+                          <span>{m.quarto?.nome || 'Sem quarto definido'}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleAbrirEdicaoMorador(m)}
+                      className="px-3 py-1.5 rounded-lg border border-line bg-paper hover:border-muted text-ink text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Editar</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ========================================================== */}
+          {/* ABA 3: CONVIDADOS EXTERNOS */}
+          {/* ========================================================== */}
+          {activeTab === 'convidados' && (
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-muted">
+                {convidados.length} {convidados.length === 1 ? 'convidado cadastrado' : 'convidados cadastrados'}
+              </p>
+
+              {convidados.length === 0 ? (
+                <div className="py-12 text-center">
+                  <div className="w-10 h-10 rounded-full bg-line text-muted flex items-center justify-center mx-auto mb-3">
+                    <Users className="w-5 h-5" />
+                  </div>
+                  <h4 className="text-base font-semibold text-ink">Nenhum convidado cadastrado</h4>
+                  <p className="text-xs text-muted mt-1 max-w-xs mx-auto">
+                    Membros externos convidados via link de convite aparecerão nesta aba.
+                  </p>
+                </div>
+              ) : (
+                convidados.map((conv) => {
+                  const whatsAppDigits = conv.telefone_contato?.replace(/\D/g, '') || '';
+                  const whatsAppUrl = whatsAppDigits ? `https://wa.me/55${whatsAppDigits}` : null;
+
+                  return (
+                    <div
+                      key={conv.id}
+                      className="p-4 rounded-xl border border-line bg-surface space-y-3 shadow-2xs"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {conv.avatar_url ? (
+                            <img
+                              src={conv.avatar_url}
+                              alt={conv.apelido || conv.nome}
+                              className="w-10 h-10 rounded-full object-cover shrink-0 border border-line"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-line text-muted font-bold text-sm flex items-center justify-center shrink-0">
+                              {(conv.apelido || conv.nome).charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-ink truncate">
+                                {conv.apelido || conv.nome}
+                              </h4>
+                              <Tag tone={conv.ativo ? 'green' : 'alert'}>
+                                {conv.ativo ? 'Ativo' : 'Desativado'}
+                              </Tag>
+                            </div>
+                            {conv.nome && conv.nome !== conv.apelido && (
+                              <p className="text-xs text-muted mt-0.5">{conv.nome}</p>
+                            )}
+                            <p className="text-xs text-muted flex items-center gap-1.5 mt-1 font-mono">
+                              <Phone className="w-3 h-3 text-forest" />
+                              <span>{conv.telefone_contato || 'Sem telefone'}</span>
+                            </p>
+                            <p className="text-[11px] text-muted/70 font-mono mt-0.5">{conv.email}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {whatsAppUrl && (
+                            <a
+                              href={whatsAppUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-2 rounded-lg bg-mint text-forest hover:bg-mint/80 transition-colors"
+                              title="Abrir WhatsApp"
+                            >
+                              <Phone className="w-4 h-4" />
+                            </a>
+                          )}
+                          <button
+                            onClick={() => handleAbrirEdicaoConvidado(conv)}
+                            className="p-2 rounded-lg border border-line bg-paper hover:border-muted text-ink transition-colors"
+                            title="Editar dados"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 pt-1 border-t border-line">
+                        <button
+                          onClick={() => handleToggleAtivoConvidado(conv)}
+                          disabled={actionLoading === conv.id}
+                          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition-colors disabled:opacity-50 ${
+                            conv.ativo
+                              ? 'border border-line bg-paper hover:bg-clay-tint hover:text-clay text-muted'
+                              : 'bg-forest hover:bg-forest-dark text-white'
+                          }`}
+                        >
+                          {conv.ativo ? (
+                            <>
+                              <UserX className="w-3.5 h-3.5" /> Desativar Convidado
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck className="w-3.5 h-3.5" /> Reativar Convidado
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => handleRemoverConvidado(conv)}
+                          disabled={actionLoading === conv.id}
+                          className="py-1.5 px-3 rounded-lg border border-line bg-paper hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center justify-center gap-1 transition-colors disabled:opacity-50"
+                          title="Remover permanentemente"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ========================================================== */}
+      {/* MODAL: EDIÇÃO DE MORADOR ATIVO PELO ADMIN */}
+      {/* ========================================================== */}
+      {editingMorador && (
+        <div className="fixed inset-0 bg-ink/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5 shadow-xl max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-line">
+              <div>
+                <h3 className="text-base font-bold text-ink flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-forest" />
+                  Editar Morador
+                </h3>
+                <p className="text-xs text-muted mt-0.5">{editingMorador.email}</p>
+              </div>
+              <button
+                onClick={() => setEditingMorador(null)}
+                className="p-1.5 rounded-lg text-muted hover:text-ink hover:bg-paper transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Foto de Perfil do Morador */}
+            <div className="flex items-center gap-3 p-3 rounded-xl border border-line bg-paper">
+              {editAvatarUrl ? (
+                <img
+                  src={editAvatarUrl}
+                  alt={editApelido}
+                  className="w-12 h-12 rounded-full object-cover border border-line shrink-0"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-mint text-forest font-bold text-base flex items-center justify-center shrink-0">
+                  {(editApelido || editNome || 'M').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-ink">Foto de Perfil</p>
+                <p className="text-[11px] text-muted truncate">
+                  {editAvatarUrl ? 'Foto configurada' : 'Sem foto'}
+                </p>
+              </div>
+              {editAvatarUrl && (
+                <button
+                  type="button"
+                  onClick={() => setEditAvatarUrl(null)}
+                  className="px-2.5 py-1.5 rounded-lg border border-line bg-surface hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Remover foto do morador"
+                >
+                  <Trash2 className="w-3 h-3" /> Remover
+                </button>
+              )}
+            </div>
+
+            <form onSubmit={handleSalvarEdicaoMorador} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Apelido na República <span className="text-clay">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editApelido}
+                  onChange={(e) => setEditApelido(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm font-medium focus:outline-none focus:border-forest"
+                />
               </div>
 
-              <div className="flex gap-2 pt-1 border-t border-line">
-                <button
-                  onClick={() => handleAprovar(p.id)}
-                  disabled={actionLoading === p.id}
-                  className="flex-1 py-2 px-3 rounded-lg bg-forest hover:bg-forest-dark text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Nome Completo <span className="text-clay">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editNome}
+                  onChange={(e) => setEditNome(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                    Geração <span className="text-clay">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editGeracao}
+                    onChange={(e) => setEditGeracao(e.target.value)}
+                    placeholder="025"
+                    className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                    Cargo (Role)
+                  </label>
+                  <select
+                    value={editRole}
+                    disabled={editingMorador.id === user?.id}
+                    onChange={(e) => setEditRole(e.target.value as UserRole)}
+                    className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest disabled:bg-paper disabled:text-muted"
+                  >
+                    <option value="morador">Morador</option>
+                    <option value="admin">Administrador</option>
+                  </select>
+                </div>
+              </div>
+
+              {editingMorador.id === user?.id && (
+                <p className="text-[11px] text-muted">
+                  * Você é o Administrador logado e não pode rebaixar seu próprio cargo.
+                </p>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Quarto Atual
+                </label>
+                <select
+                  value={editQuartoId}
+                  onChange={(e) => setEditQuartoId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
                 >
-                  <Check className="w-3.5 h-3.5" />
-                  {actionLoading === p.id ? 'Aprovando...' : 'Aprovar Morador'}
+                  <option value="">Sem quarto vinculado</option>
+                  {rooms.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.nome}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={actionLoading === editingMorador.id}
+                  className="flex-1 py-2.5 px-4 rounded-lg bg-forest hover:bg-forest-dark text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                >
+                  {actionLoading === editingMorador.id ? 'Salvando...' : 'Salvar Dados'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingMorador(null)}
+                  className="py-2.5 px-3 rounded-lg border border-line bg-paper hover:bg-line text-ink text-xs font-medium transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+
+            {/* Zona Administrativa Crítica: Desativação / Remoção */}
+            <div className="pt-3 border-t border-line space-y-2">
+              <h5 className="text-[11px] font-bold text-muted uppercase tracking-wider">
+                Zona de Acesso
+              </h5>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleDesativarMorador(editingMorador)}
+                  disabled={editingMorador.id === user?.id || actionLoading === editingMorador.id}
+                  className="flex-1 py-2 px-3 rounded-lg border border-line bg-paper hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center justify-center gap-1 transition-colors disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted"
+                >
+                  <UserX className="w-3.5 h-3.5" />
+                  Desativar Acesso
                 </button>
 
                 <button
-                  onClick={() => handleRecusar(p.id)}
-                  disabled={actionLoading === p.id}
-                  className="py-2 px-3 rounded-lg border border-line bg-paper hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center justify-center gap-1 transition-colors disabled:opacity-50"
+                  type="button"
+                  onClick={() => handleRemoverMorador(editingMorador)}
+                  disabled={editingMorador.id === user?.id || actionLoading === editingMorador.id}
+                  className="py-2 px-3 rounded-lg border border-line bg-paper hover:border-clay hover:text-clay text-muted text-xs font-medium flex items-center justify-center gap-1 transition-colors disabled:opacity-40 disabled:hover:border-line disabled:hover:text-muted"
+                  title="Excluir cadastro"
                 >
-                  <X className="w-3.5 h-3.5" /> Recusar
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
-          ))}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================== */}
+      {/* MODAL: EDIÇÃO DE CONVIDADO EXTERNO */}
+      {/* ========================================================== */}
+      {editingConvidado && (
+        <div className="fixed inset-0 bg-ink/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-line">
+              <div>
+                <h3 className="text-base font-bold text-ink flex items-center gap-2">
+                  <Phone className="w-4 h-4 text-forest" />
+                  Editar Convidado
+                </h3>
+                <p className="text-xs text-muted mt-0.5">{editingConvidado.email}</p>
+              </div>
+              <button
+                onClick={() => setEditingConvidado(null)}
+                className="p-1.5 rounded-lg text-muted hover:text-ink hover:bg-paper transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSalvarEdicaoConvidado} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Apelido <span className="text-clay">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editConvApelido}
+                  onChange={(e) => setEditConvApelido(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm font-medium focus:outline-none focus:border-forest"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Nome Completo
+                </label>
+                <input
+                  type="text"
+                  value={editConvNome}
+                  onChange={(e) => setEditConvNome(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm focus:outline-none focus:border-forest"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-ink uppercase tracking-wider mb-1">
+                  Telefone / WhatsApp <span className="text-clay">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editConvTelefone}
+                  onChange={(e) => setEditConvTelefone(e.target.value)}
+                  placeholder="(19) 99999-9999"
+                  className="w-full px-3 py-2 rounded-lg border border-line bg-surface text-ink text-sm font-mono focus:outline-none focus:border-forest"
+                />
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={actionLoading === editingConvidado.id}
+                  className="flex-1 py-2.5 px-4 rounded-lg bg-forest hover:bg-forest-dark text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                >
+                  {actionLoading === editingConvidado.id ? 'Salvando...' : 'Salvar Convidado'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingConvidado(null)}
+                  className="py-2.5 px-3 rounded-lg border border-line bg-paper hover:bg-line text-ink text-xs font-medium transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </>
