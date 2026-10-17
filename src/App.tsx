@@ -13,6 +13,7 @@ import { DenunciaPontoScreen } from './features/pontos/DenunciaPontoScreen';
 import { QuadroPontosScreen } from './features/faxina/QuadroPontosScreen';
 import { CervejasScreen } from './features/cervejas/CervejasScreen';
 import { FuncasScreen } from './features/funcas/FuncasScreen';
+import { AtasScreen } from './features/atas/AtasScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
@@ -24,7 +25,7 @@ type Screen =
   | 'home' | 'rotina' | 'casa'
   | 'misturas' | 'quadro' | 'pontoBagunca'
   | 'funcas' | 'cervejas' | 'frentes'
-  | 'aprovacoes';
+  | 'aprovacoes' | 'atas';
 
 const chevron = <span className="text-muted">›</span>;
 
@@ -388,7 +389,16 @@ function MainApp() {
             </div>
 
             <div className="mb-8">
-              <h3 className="text-xs font-medium text-muted mb-1.5">Links da casa</h3>
+              <div className="flex items-center justify-between mb-1.5">
+                <h3 className="text-xs font-medium text-muted">Links da casa</h3>
+                <button
+                  type="button"
+                  onClick={() => go('atas')}
+                  className="text-xs text-forest hover:text-forest-dark font-medium flex items-center gap-0.5 cursor-pointer"
+                >
+                  Gerenciar / Histórico ›
+                </button>
+              </div>
               <div className="grid grid-cols-2 gap-2.5">
                 <LinkButton href={ultimaAtaUrl} emptyLabel="Nenhuma ata">Última ata</LinkButton>
                 <LinkButton href={driveUrl} emptyLabel="Drive indisponível">Drive da rep</LinkButton>
@@ -464,6 +474,7 @@ function MainApp() {
               <Row title="Funças" meta="Tarefas gerais e das frentes" onClick={() => go('funcas')} right={chevron} />
               <Row title="Frentes" meta="10 frentes e seus chats" onClick={() => go('frentes')} right={chevron} />
               <Row title="Cervejas" meta="Caixas devidas e baixas" onClick={() => go('cervejas')} right={chevron} />
+              <Row title="Atas & Links da Casa" meta="Publicar ata, histórico e link do Drive" onClick={() => go('atas')} right={chevron} />
             </Section>
           </>
         );
@@ -510,6 +521,9 @@ function MainApp() {
 
       case 'aprovacoes':
         return <AprovacoesScreen onBack={goBack} />;
+
+      case 'atas':
+        return <AtasScreen onBack={goBack} />;
     }
   };
 

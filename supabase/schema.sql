@@ -1583,3 +1583,65 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ==============================================================================
+-- 9. POLÍTICAS RLS: ATAS DE REUNIÃO E CONFIGURAÇÕES DA CASA (RN12)
+-- ==============================================================================
+ALTER TABLE public.atas_reuniao ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.house_settings ENABLE ROW LEVEL SECURITY;
+
+-- 9.1 ATAS DE REUNIÃO: Qualquer morador ativo ou Admin pode ler, publicar, editar e excluir
+DROP POLICY IF EXISTS "Moradores ativos e admin leem atas" ON public.atas_reuniao;
+CREATE POLICY "Moradores ativos e admin leem atas"
+ON public.atas_reuniao FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Moradores ativos e admin publicam atas" ON public.atas_reuniao;
+CREATE POLICY "Moradores ativos e admin publicam atas"
+ON public.atas_reuniao FOR INSERT
+TO authenticated
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Moradores ativos e admin editam atas" ON public.atas_reuniao;
+CREATE POLICY "Moradores ativos e admin editam atas"
+ON public.atas_reuniao FOR UPDATE
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador())
+WITH CHECK (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Moradores ativos e admin excluem atas" ON public.atas_reuniao;
+CREATE POLICY "Moradores ativos e admin excluem atas"
+ON public.atas_reuniao FOR DELETE
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+-- 9.2 HOUSE SETTINGS (Link do Drive): Moradores ativos leem; apenas Admin altera
+DROP POLICY IF EXISTS "Moradores ativos e admin leem house_settings" ON public.house_settings;
+CREATE POLICY "Moradores ativos e admin leem house_settings"
+ON public.house_settings FOR SELECT
+TO authenticated
+USING (public.is_admin() OR public.is_active_morador());
+
+DROP POLICY IF EXISTS "Apenas admin gerencia house_settings" ON public.house_settings;
+CREATE POLICY "Apenas admin gerencia house_settings"
+ON public.house_settings FOR ALL
+TO authenticated
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
+
+-- Habilitar Realtime para atas_reuniao e house_settings
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['atas_reuniao', 'house_settings']
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;
