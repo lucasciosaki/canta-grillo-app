@@ -123,7 +123,7 @@ async function comprimirImagemParaDataUrl(file: File): Promise<string> {
 }
 
 export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }) => {
-  const { user, profile, session } = useAuth();
+  const { user, profile } = useAuth();
   const isAdmin = profile?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState<'quadro' | 'minha_funcao' | 'fiscal'>('quadro');
@@ -168,28 +168,12 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   const [regrasExpandidas, setRegrasExpandidas] = useState(false);
   const [salvandoRegras, setSalvandoRegras] = useState(false);
 
-  // Fetch autenticado com Bearer Token do Supabase
-  const apiFetch = useCallback(
-    async (url: string, options: RequestInit = {}) => {
-      const token = session?.access_token;
-      const headers = new Headers(options.headers || {});
-      if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
-        headers.set('Content-Type', 'application/json');
-      }
-      if (token) {
-        headers.set('Authorization', `Bearer ${token}`);
-      }
-      return fetch(url, { ...options, headers });
-    },
-    [session?.access_token]
-  );
-
   // Carrega Quartos e Funções para configuração da escala
   const carregarDadosIniciais = useCallback(async () => {
     try {
       setLoadingDadosIniciais(true);
 
-      // 1. Tenta buscar direto do Supabase primeiro
+      // 1. Busca direto do Supabase
       const [roomsSupa, areasSupa] = await Promise.all([
         supabase.from('rooms').select('id, nome, capacidade').order('nome'),
         supabase.from('areas_comuns').select('id, nome, descricao'),
@@ -198,21 +182,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       let rooms: Quarto[] = (roomsSupa.data as Quarto[]) || [];
       let areas: AreaComum[] = (areasSupa.data as AreaComum[]) || [];
 
-      // 2. Se vazio, tenta carregar via backend API
-      if (rooms.length === 0 || areas.length === 0) {
-        try {
-          const res = await apiFetch('/api/faxina/dados-iniciais');
-          if (res.ok) {
-            const d = await res.json();
-            if (rooms.length === 0 && d.rooms?.length > 0) rooms = d.rooms;
-            if (areas.length === 0 && d.areas?.length > 0) areas = d.areas;
-          }
-        } catch (apiErr) {
-          console.warn('[QuadroPontosScreen] API dados-iniciais falhou:', apiErr);
-        }
-      }
-
-      // 3. Fallback inteligente: se areas_comuns continuar vazia, tenta semear ou usa fallback canônico
+      // 2. Se areas_comuns estiver vazia, tenta semear ou usa fallback canônico
       if (areas.length === 0) {
         try {
           const { data: insertedAreas } = await supabase
@@ -224,7 +194,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
             areas = insertedAreas as AreaComum[];
           }
         } catch {
-          // Se falhar RLS no cliente, gera IDs temporários para a UI nunca ficar em branco
+          // Fallback se faltar permissão
         }
 
         if (areas.length === 0) {
@@ -236,7 +206,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         }
       }
 
-      // 4. Se rooms continuar vazia, tenta semear ou usa canônicos
+      // 3. Se rooms estiver vazia, tenta semear ou usa canônicos
       if (rooms.length === 0) {
         try {
           const { data: insertedRooms } = await supabase
@@ -266,41 +236,35 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     } finally {
       setLoadingDadosIniciais(false);
     }
-  }, [apiFetch]);
+  }, []);
 
-  // Carrega Quadro Consolidado (Tenta Backend -> Fallback Supabase)
+  // Carrega Quadro Consolidado Diretamente do Supabase + RPC
   const carregarQuadro = useCallback(async () => {
     try {
       setErrorMsg(null);
 
-      // 1. Tenta buscar da API Express
+      const agora = new Date();
+      const { semana_ano, ano } = getIsoWeekAndYear(agora);
+      const hojeStr = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(agora);
+
+      // 1. Invoca a RPC nativa para garantir a escala da semana e tarefas do dia
       try {
-        const res = await apiFetch('/api/faxina/quadro');
-        if (res.ok) {
-          const data: QuadroSemanalConsolidado = await res.json();
-          setQuadro(data);
-
-          if (data.regras_pontos && data.regras_pontos.length > 0) {
-            setRegrasPontos(data.regras_pontos);
-            const formMap: { [p: number]: string } = {};
-            data.regras_pontos.forEach((r) => {
-              formMap[r.pontos] = r.descricao;
-            });
-            setRegrasForm((prev) => ({ ...prev, ...formMap }));
-          }
-
-          if (data.precisa_inicializacao && isAdmin) {
-            carregarDadosIniciais();
-          }
-          return;
-        }
-      } catch (apiErr) {
-        console.warn('[QuadroPontosScreen] Backend offline, carregando direto do Supabase...', apiErr);
+        await supabase.rpc('garantir_quadro_faxina_atual', {
+          p_semana_ano: semana_ano,
+          p_ano: ano,
+          p_data: hojeStr,
+        });
+      } catch (rpcErr) {
+        console.warn('[QuadroPontosScreen] Aviso ao chamar garantir_quadro_faxina_atual:', rpcErr);
       }
 
-      // 2. Fallback direto no Supabase
-      const { semana_ano, ano } = getIsoWeekAndYear();
-      const { data: itensDb } = await supabase
+      // 2. Consulta itens da escala da semana atual
+      const { data: itensDb, error: errEscala } = await supabase
         .from('escala_semanal_faxina')
         .select(`
           quarto_id,
@@ -315,10 +279,14 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         .eq('semana_ano', semana_ano)
         .eq('ano', ano);
 
-      const itens = (itensDb as any[]) || [];
-      const precisa_inicializacao = itens.length === 0;
+      if (errEscala) {
+        console.error('[QuadroPontosScreen] Erro ao buscar escala semanal:', errEscala);
+      }
 
-      // Busca regras configuradas de 2 a 7 pontos
+      const itens = (itensDb as any[]) || [];
+      const precisa_inicializacao = itens.length < 6;
+
+      // 3. Consulta regras configuradas de 2 a 7 pontos
       let regrasCarregadas = REGRAS_PONTOS_PADRAO;
       try {
         const { data: regrasDb } = await supabase
@@ -335,24 +303,29 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           });
           setRegrasForm((prev) => ({ ...prev, ...formMap }));
         }
-      } catch {
-        // Fallback para REGRAS_PONTOS_PADRAO
+      } catch (errRegras) {
+        console.warn('[QuadroPontosScreen] Usando regras padrão:', errRegras);
       }
 
-      // Busca registros de hoje
-      const hojeStr = new Date().toISOString().split('T')[0];
-      const { data: tarefasDb } = await supabase
+      // 4. Consulta tarefas de hoje
+      const { data: tarefasDb, error: errTarefas } = await supabase
         .from('registro_diario_faxina')
         .select(`
           id,
           quarto_id,
           area_comum_id,
+          semana_ano,
+          ano,
           data,
           status,
           fotos_comprovacao,
+          enviado_em,
+          registrado_por,
           fiscal_status,
           fiscal_foto_url,
           fiscal_observacao,
+          fiscalizado_em,
+          fiscalizado_por,
           registrado_por:profiles!registrado_por (apelido, nome),
           fiscalizado_por:profiles!fiscalizado_por (apelido, nome),
           quarto:rooms (id, nome),
@@ -360,11 +333,17 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         `)
         .eq('data', hojeStr);
 
-      const itemFiscal = itens.find((i) => i.area_comum?.nome === 'Halls');
+      if (errTarefas) {
+        console.error('[QuadroPontosScreen] Erro ao buscar tarefas do dia:', errTarefas);
+      }
+
+      const itemFiscal = itens.find((i) => (i.area_comum?.nome || '').trim().toLowerCase() === 'halls');
+      const penalidadeSemana = itens[0]?.penalidade_atribuida || 'Pagar 1 caixa de cerveja para a casa';
+
       const quadroConsolidado: QuadroSemanalConsolidado = {
         semana_ano,
         ano,
-        penalidade_semana: itens[0]?.penalidade_atribuida || 'Pagar 1 caixa de cerveja para a casa',
+        penalidade_semana: penalidadeSemana,
         regras_pontos: regrasCarregadas,
         quarto_fiscal_id: itemFiscal?.quarto_id || null,
         quarto_fiscal_nome: itemFiscal?.quarto?.nome || null,
@@ -373,7 +352,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           ...t,
           enviado_por_apelido: t.registrado_por?.apelido || t.registrado_por?.nome || null,
           fiscalizado_por_apelido: t.fiscalizado_por?.apelido || t.fiscalizado_por?.nome || null,
-          isFiscal: t.area_comum?.nome === 'Halls',
+          isFiscal: (t.area_comum?.nome || '').trim().toLowerCase() === 'halls',
         })),
         precisa_inicializacao,
       };
@@ -388,7 +367,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     } finally {
       setLoading(false);
     }
-  }, [isAdmin, apiFetch, carregarDadosIniciais]);
+  }, [isAdmin, carregarDadosIniciais]);
 
   useEffect(() => {
     carregarQuadro();
@@ -429,7 +408,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     (t) => t.quarto_id !== quadro?.quarto_fiscal_id && t.status === 'cumprido' && t.fiscal_status === 'pendente'
   ).length || 0;
 
-  // Manipulação de Upload de Foto da Faxina
+  // Manipulação de Upload de Foto da Faxina (Upsert direto em registro_diario_faxina)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -442,20 +421,37 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         throw new Error('Você não está escalado em nenhum quarto nesta semana.');
       }
 
-      // Envia para API
-      const res = await apiFetch('/api/faxina/enviar-foto', {
-        method: 'POST',
-        body: JSON.stringify({
-          quarto_id: minhaEscala.quarto_id,
-          area_comum_id: minhaEscala.area_comum_id,
-          foto_url: dataUrl,
-          morador_id: user.id,
-        }),
-      });
+      const hojeStr = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
 
-      if (!res.ok) {
-        const errJson = await res.json();
-        throw new Error(errJson.error || 'Erro ao registrar envio da foto.');
+      const { semana_ano, ano } = getIsoWeekAndYear();
+
+      // Upsert direto no Supabase: o trigger trg_validate_and_apply_faxina_rules valida que o morador
+      // só envia para seu próprio quarto (ou admin), atribuindo registrado_por automaticamente.
+      const { error: upsertErr } = await supabase
+        .from('registro_diario_faxina')
+        .upsert(
+          {
+            quarto_id: minhaEscala.quarto_id,
+            area_comum_id: minhaEscala.area_comum_id,
+            semana_ano,
+            ano,
+            data: hojeStr,
+            status: 'cumprido',
+            fotos_comprovacao: [dataUrl],
+            enviado_em: new Date().toISOString(),
+            registrado_por: user.id,
+            fiscal_status: 'pendente',
+          },
+          { onConflict: 'quarto_id,area_comum_id,semana_ano,ano,data' }
+        );
+
+      if (upsertErr) {
+        throw new Error(upsertErr.message || 'Erro ao registrar envio da foto.');
       }
 
       await carregarQuadro();
@@ -466,28 +462,30 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     }
   };
 
-  // Envio da Fiscalização
+  // Envio da Fiscalização (Update direto em registro_diario_faxina)
   const handleSalvarFiscalizacao = async () => {
     if (!tarefaFiscalizando || !fiscalDecisao || !user) return;
 
     try {
       setEnviandoFiscal(true);
-      const res = await apiFetch('/api/faxina/fiscalizar', {
-        method: 'POST',
-        body: JSON.stringify({
-          quarto_id: tarefaFiscalizando.quarto_id,
-          area_comum_id: tarefaFiscalizando.area_comum_id,
-          data: tarefaFiscalizando.data,
-          fiscal_status: fiscalDecisao,
-          fiscal_foto_url: fiscalFotoPreview,
-          fiscal_observacao: fiscalObservacao.trim() || null,
-          fiscal_morador_id: user.id,
-        }),
-      });
 
-      if (!res.ok) {
-        const errJson = await res.json();
-        throw new Error(errJson.error || 'Erro ao registrar fiscalização.');
+      // Update direto no Supabase: o trigger trg_validate_and_apply_faxina_rules valida se auth.uid()
+      // pertence ao quarto do Halls (ou Admin) e trg_faxina_reprovado_falta incrementa a falta se reprovado.
+      const { error: updateErr } = await supabase
+        .from('registro_diario_faxina')
+        .update({
+          fiscal_status: fiscalDecisao,
+          fiscal_foto_url: fiscalFotoPreview || null,
+          fiscal_observacao: fiscalObservacao.trim() || null,
+          fiscalizado_em: new Date().toISOString(),
+          fiscalizado_por: user.id,
+        })
+        .eq('quarto_id', tarefaFiscalizando.quarto_id)
+        .eq('area_comum_id', tarefaFiscalizando.area_comum_id)
+        .eq('data', tarefaFiscalizando.data);
+
+      if (updateErr) {
+        throw new Error(updateErr.message || 'Erro ao registrar fiscalização.');
       }
 
       setTarefaFiscalizando(null);
@@ -518,7 +516,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     setAtribuicoesForm(novasAtribuicoes);
   };
 
-  // Salvar Inicialização de Escala (Admin)
+  // Salvar Inicialização de Escala (Admin) - Diretamente no Supabase
   const handleSalvarInicializacao = async () => {
     if (!dadosIniciais) return;
 
@@ -537,70 +535,62 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         return;
       }
 
+      const { semana_ano, ano } = getIsoWeekAndYear();
+      const hojeStr = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+
+      // 1. Garante mapeamento correto de IDs das áreas comuns
+      const { data: areasDb } = await supabase.from('areas_comuns').select('id, nome');
+      const mapAreaNomeParaId = new Map((areasDb || []).map((a) => [(a.nome || '').trim().toLowerCase(), a.id]));
+
+      const rows = atribuicoes.map((a) => {
+        const areaRealId = mapAreaNomeParaId.get((a.area_nome || '').trim().toLowerCase()) || a.area_comum_id;
+        return {
+          quarto_id: a.quarto_id,
+          area_comum_id: areaRealId,
+          semana_ano,
+          ano,
+          pontos_faltas: 0,
+          penalidade_atribuida: penalidadeForm,
+        };
+      });
+
+      const { error: insErr } = await supabase
+        .from('escala_semanal_faxina')
+        .upsert(rows, { onConflict: 'quarto_id,area_comum_id,semana_ano,ano' });
+
+      if (insErr) {
+        throw new Error(`Erro ao salvar escala no banco: ${insErr.message}`);
+      }
+
+      // 2. Salva regras configuradas de penalidades
       const regrasParaSalvar: RegraPontoItem[] = [2, 3, 4, 5, 6, 7].map((pts) => ({
         pontos: pts,
         descricao: (regrasForm[pts] || '').trim() || (REGRAS_PONTOS_PADRAO.find((r) => r.pontos === pts)?.descricao ?? ''),
       }));
 
-      // 1. Tenta salvar via API Backend
-      let salvoComSucesso = false;
+      const regrasRows = regrasParaSalvar.map((r) => ({
+        pontos: r.pontos,
+        descricao: r.descricao,
+        atualizado_por: user?.id,
+        atualizado_em: new Date().toISOString(),
+      }));
+
+      await supabase.from('regras_quadro_pontos').upsert(regrasRows, { onConflict: 'pontos' });
+
+      // 3. Garante geração das 6 tarefas do dia chamando a RPC
       try {
-        const res = await apiFetch('/api/faxina/inicializar', {
-          method: 'POST',
-          body: JSON.stringify({
-            atribuicoes,
-            penalidade: penalidadeForm,
-            regras_pontos: regrasParaSalvar,
-          }),
+        await supabase.rpc('garantir_quadro_faxina_atual', {
+          p_semana_ano: semana_ano,
+          p_ano: ano,
+          p_data: hojeStr,
         });
-
-        if (res.ok) {
-          salvoComSucesso = true;
-        }
-      } catch (apiErr) {
-        console.warn('[QuadroPontosScreen] Backend falhou na inicialização, tentando Supabase direto...', apiErr);
-      }
-
-      // 2. Fallback direto no Supabase caso API esteja offline ou bloqueada
-      if (!salvoComSucesso) {
-        const { semana_ano, ano } = getIsoWeekAndYear();
-
-        // Garante UUIDs válidos das áreas comuns no Supabase
-        const { data: areasDb } = await supabase.from('areas_comuns').select('id, nome');
-        const mapAreaNomeParaId = new Map((areasDb || []).map((a) => [a.nome, a.id]));
-
-        const rows = atribuicoes.map((a) => {
-          const areaRealId = mapAreaNomeParaId.get(a.area_nome) || a.area_comum_id;
-          return {
-            quarto_id: a.quarto_id,
-            area_comum_id: areaRealId,
-            semana_ano,
-            ano,
-            pontos_faltas: 0,
-            penalidade_atribuida: penalidadeForm,
-          };
-        });
-
-        const { error: insErr } = await supabase
-          .from('escala_semanal_faxina')
-          .upsert(rows, { onConflict: 'quarto_id,area_comum_id,semana_ano,ano' });
-
-        if (insErr) {
-          throw new Error(`Erro ao salvar no banco: ${insErr.message}`);
-        }
-
-        // Tenta salvar regras no Supabase
-        try {
-          const regrasRows = regrasParaSalvar.map((r) => ({
-            pontos: r.pontos,
-            descricao: r.descricao,
-            atualizado_por: user?.id,
-            atualizado_em: new Date().toISOString(),
-          }));
-          await supabase.from('regras_quadro_pontos').upsert(regrasRows, { onConflict: 'pontos' });
-        } catch {
-          // Ignora se tabela ainda não tiver sido criada pelo SQL script
-        }
+      } catch (rpcErr) {
+        console.warn('[QuadroPontosScreen] Aviso ao chamar RPC após salvar escala:', rpcErr);
       }
 
       setModalAdminOpen(false);
@@ -613,7 +603,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     }
   };
 
-  // Salvar Regras de Penalidades (2 a 7 Pontos) - Admin
+  // Salvar Regras de Penalidades (2 a 7 Pontos) - Admin Diretamente no Supabase
   const handleSalvarRegras = async () => {
     try {
       setSalvandoRegras(true);
@@ -622,34 +612,19 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         descricao: (regrasForm[pts] || '').trim() || (REGRAS_PONTOS_PADRAO.find((r) => r.pontos === pts)?.descricao ?? ''),
       }));
 
-      // 1. Tenta API Backend
-      let salvoComSucesso = false;
-      try {
-        const res = await apiFetch('/api/faxina/regras', {
-          method: 'POST',
-          body: JSON.stringify({ regras: novasRegras }),
-        });
-        if (res.ok) {
-          salvoComSucesso = true;
-        }
-      } catch (apiErr) {
-        console.warn('[QuadroPontosScreen] Backend falhou ao salvar regras, tentando Supabase direto...', apiErr);
-      }
+      const rows = novasRegras.map((r) => ({
+        pontos: r.pontos,
+        descricao: r.descricao,
+        atualizado_por: user?.id,
+        atualizado_em: new Date().toISOString(),
+      }));
 
-      // 2. Fallback direto no Supabase
-      if (!salvoComSucesso) {
-        const rows = novasRegras.map((r) => ({
-          pontos: r.pontos,
-          descricao: r.descricao,
-          atualizado_por: user?.id,
-          atualizado_em: new Date().toISOString(),
-        }));
-        const { error: insErr } = await supabase
-          .from('regras_quadro_pontos')
-          .upsert(rows, { onConflict: 'pontos' });
-        if (insErr) {
-          throw new Error(`Erro ao salvar regras no banco: ${insErr.message}`);
-        }
+      const { error: insErr } = await supabase
+        .from('regras_quadro_pontos')
+        .upsert(rows, { onConflict: 'pontos' });
+
+      if (insErr) {
+        throw new Error(`Erro ao salvar regras no banco: ${insErr.message}`);
       }
 
       setRegrasPontos(novasRegras);
@@ -671,28 +646,34 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     setRegrasForm(padrao);
   };
 
-  // Disparos Administrativos de Teste
+  // Disparos Administrativos de Teste via RPC Nativa do Supabase
   const handleSimularCorte01h = async () => {
     try {
-      setAdminAcaoMsg('Executando simulação de corte das 01h...');
-      const res = await apiFetch('/api/faxina/admin/virada-01h', { method: 'POST' });
-      const d = await res.json();
-      setAdminAcaoMsg(`Corte executado! ${d.resultado?.quartosSemFotoPenalizados?.length || 0} quartos penalizados por falta de foto.`);
+      setAdminAcaoMsg('Executando corte diário das 01h via RPC no Supabase...');
+      const { data, error } = await supabase.rpc('processar_corte_diario_01h');
+      if (error) throw error;
+      const d = data as any;
+      setAdminAcaoMsg(
+        `Corte executado! ${d?.quartosPenalizados?.length || 0} quarto(s) penalizado(s). Semana virada: ${d?.semanaVirada ? 'Sim' : 'Não'}.`
+      );
       await carregarQuadro();
-    } catch {
-      setAdminAcaoMsg('Erro ao simular corte.');
+    } catch (err: any) {
+      setAdminAcaoMsg(`Erro ao simular corte: ${err.message}`);
     }
   };
 
   const handleSimularAuditoria11h = async () => {
     try {
-      setAdminAcaoMsg('Executando simulação de auditoria das 11h...');
-      const res = await apiFetch('/api/faxina/admin/auditoria-11h', { method: 'POST' });
-      const d = await res.json();
-      setAdminAcaoMsg(`Auditoria executada! Omissões detectadas: ${d.resultado?.omissoes || 0}. Halls penalizado: ${d.resultado?.hallsPenalizado ? 'Sim' : 'Não'}.`);
+      setAdminAcaoMsg('Executando simulação de auditoria das 11h via RPC no Supabase...');
+      const { data, error } = await supabase.rpc('processar_auditoria_fiscal_11h');
+      if (error) throw error;
+      const d = data as any;
+      setAdminAcaoMsg(
+        `Auditoria executada! Omissões detectadas: ${d?.omissoes || 0}. Halls penalizado: ${d?.hallsPenalizado ? 'Sim' : 'Não'}.`
+      );
       await carregarQuadro();
-    } catch {
-      setAdminAcaoMsg('Erro ao simular auditoria.');
+    } catch (err: any) {
+      setAdminAcaoMsg(`Erro ao simular auditoria: ${err.message}`);
     }
   };
 

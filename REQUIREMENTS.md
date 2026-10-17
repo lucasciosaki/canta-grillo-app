@@ -212,11 +212,24 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - **Exibição na Interface:**
   - Na aba "Quadro Geral", exibe-se um card expansível/recolhível com a lista dos 7 níveis de punição.
   - No card de cada quarto com $\ge 2$ faltas, exibe-se em destaque a punição específica correspondente ao total de faltas do quarto.
-- **Governança e Políticas RLS (Database-First):**
-  - **`regras_quadro_pontos`**: Chave primária `pontos INT CHECK (pontos BETWEEN 2 AND 7)`. Leitura pública para todos (`SELECT TO anon, authenticated USING (true)`). Inserção e atualização permitidas para Administradores e moradores ativos (`ALL TO authenticated USING (is_admin() OR is_active_morador())`).
-  - **`areas_comuns`**: Leitura permitida para todos os autenticados (`SELECT`). Inserção e atualização permitidas para Administradores e moradores ativos (`public.is_admin() OR public.is_active_morador()`).
-  - **`escala_semanal_faxina`**: Leitura pública para autenticados (`SELECT`). Gestão e inicialização permitidas para Administradores e moradores ativos (`ALL`).
-  - **`registro_diario_faxina`**: Leitura aberta para autenticados (`SELECT`). Inserção de foto e avaliação de fiscalização permitidas para Administradores e moradores ativos (`ALL`).
+- **Governança, Políticas RLS e Automação 100% Database-First:**
+  - **Eliminação de Servidor Intermediário em Produção:** Todas as validações, cálculo de faltas, rodízio circular e rotinas cron rodam dentro do PostgreSQL no Supabase.
+  - **`regras_quadro_pontos`**: Chave primária `pontos INT CHECK (pontos BETWEEN 2 AND 7)`. Leitura pública (`SELECT TO anon, authenticated USING (true)`). Inserção, alteração e exclusão estritamente restritas ao Administrador (`ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin())`).
+  - **`areas_comuns`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Gestão permitida para Administradores e moradores ativos.
+  - **`escala_semanal_faxina`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Modificação manual direta restrita a Administradores (`ALL TO authenticated USING (public.is_admin())`). O rodízio automático e a atribuição de faltas ocorrem via Stored Procedures e Triggers `SECURITY DEFINER`.
+  - **`registro_diario_faxina`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Escrita aberta a moradores ativos e administradores, protegida rigorosamente por triggers:
+    - **Trigger `trg_validate_and_apply_faxina_rules` (`BEFORE INSERT OR UPDATE`):** Valida que o morador só envia fotos de comprovação para o seu próprio quarto (`NEW.quarto_id = profiles.quarto_id`) e que apenas moradores do quarto escalado no Halls naquela semana (`public.is_fiscal_halls(semana, ano)`) ou o Admin podem registrar aprovação ou reprovação.
+    - **Trigger `trg_faxina_reprovado_falta` (`AFTER INSERT OR UPDATE OF fiscal_status`):** Em caso de reprovação expressa (`fiscal_status = 'reprovado'`), incrementa automaticamente `pontos_faltas = pontos_faltas + 1` na escala semanal.
+  - **Funções RPC Nativas (`SECURITY DEFINER`):**
+    - `public.avancar_rodizio_faxina(p_nova_semana, p_novo_ano)`: aplica o rodízio linear circular ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
+    - `public.garantir_quadro_faxina_atual(p_semana_ano, p_ano, p_data)`: assegura a existência da escala da semana e as 6 tarefas diárias.
+    - `public.processar_corte_diario_01h(p_data_ref)`: corte diário das 01:00 BRT com auditoria de faltas e virada dominical.
+    - `public.processar_auditoria_fiscal_11h(p_data_ref)`: corte das 11:00 BRT com marcação de omissões e falta única ao Halls.
+  - **Rotinas Agendadas Nativas via `pg_cron`:**
+    - `0 4 * * *` (01:00 BRT / 04:00 UTC): Corte diário da faxina.
+    - `0 14 * * *` (11:00 BRT / 14:00 UTC): Auditoria fiscal do Halls.
+    - `*/15 * * * *`: Auditoria de 24h em pontos de bagunça.
+  - **Deploy Contínuo e Caching:** Suporte estático serverless configurado via `vercel.json` e `netlify.toml` com SPA rewrites para `/index.html` e controle de cache `max-age=0, must-revalidate` para `sw.js` e `manifest.webmanifest`.
   - **Identificação Estrita por Apelido:** Todas as referências visuais aos moradores e administradores na interface e no histórico de avaliações exibem estritamente o **apelido** cadastrado.
 
 ### RN07 - Registro Estritamente Unitário, Liquidação de Caixas de Cerveja e Políticas RLS

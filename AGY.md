@@ -448,14 +448,25 @@ classDiagram
    * **Penalidade Automática das 24 Horas:** A função do banco `public.verificar_penalidades_pontos_24h()` aplica 1 ponto de bagunça para qualquer morador ativo que não abrir a imagem após 24h da abertura. Se o culpado assumir a infração antes das 24h (`status = 'assumida'`), a penalidade de não-leitura é desativada para todos.
    * **Realtime:** Integrada à publicação `supabase_realtime` para sincronização instantânea de novas denúncias, visualizações e mensagens de apuração.
 11. **Quadro de Pontos, Rodízio Linear e Fiscalização do Halls (`ESCALA_SEMANAL_FAXINA` & `REGISTRO_DIARIO_FAXINA`):**
+   * **Arquitetura 100% Database-First & Serverless:** Eliminação completa da dependência de um servidor Node.js/Express intermediário em produção. 100% das regras de negócio, validações de integridade, cálculo de faltas e rotinas agendadas residem nativamente no PostgreSQL dentro do Supabase via **Triggers, Políticas RLS, Funções RPC (`SECURITY DEFINER`) e `pg_cron`**.
    * **6 Funções e 6 Quartos:** As 6 funções fixas (Sala de TV, Sala de Estudos, Externo, Dispensa, Cozinha, Halls) rotacionam linearmente a cada Domingo às 01:00 BRT entre os 6 quartos da república ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
-   * **Backend Dedicado e Agendamentos:** Servidor Node.js integrado (`server/src/server.ts`) executando rotinas cron:
-     - `01:00 BRT`: Corte diário. Quarto sem foto comprovada toma +1 falta na escala da semana (`status = 'faltou'`). Aos domingos, dispara a virada de semana.
-     - `11:00 BRT`: Auditoria do fiscal. Se o quarto do Halls deixar tarefas de ontem sem parecer, marca `fiscal_status = 'omitido'` e o Halls toma no máximo 1 falta por omissão no dia (desde que não tenha tomado falta às 01:00 por falta de foto do hall).
-   * **Políticas RLS em `areas_comuns`, `ESCALA_SEMANAL_FAXINA` e `REGISTRO_DIARIO_FAXINA`:**
-     - **`areas_comuns`**: `SELECT` público para autenticados; `ALL` permitido para administradores e moradores ativos para garantir semeadura das 6 funções.
-     - **`escala_semanal_faxina`**: `SELECT` público para autenticados; `ALL` permitido para administradores e moradores ativos para inicialização manual e rodízio resiliente.
-     - **`registro_diario_faxina`**: `SELECT` público para autenticados; `ALL` para envio de comprovação e fiscalização do Halls.
+   * **Helper de Autorização `public.is_fiscal_halls(p_semana_ano INT, p_ano INT)`:** Retorna `TRUE` se o usuário autenticado (`auth.uid()`) pertence ao quarto escalado na área `'Halls'` naquela semana/ano (com `ativo = true`), ou se for Administrador (`public.is_admin()`).
+   * **Trigger `trg_validate_and_apply_faxina_rules` (`BEFORE INSERT OR UPDATE ON public.registro_diario_faxina`):**
+     - **Envio de Foto:** Quando o morador envia foto (`NEW.status = 'cumprido'`), valida que `public.is_admin()` OU que o `quarto_id` do morador em `public.profiles` é igual a `NEW.quarto_id`. Caso contrário, bloqueia com exceção: `'Você só pode enviar foto de comprovação para o seu próprio quarto.'`.
+     - **Fiscalização do Halls:** Quando `NEW.fiscal_status` muda para `'aprovado'` ou `'reprovado'`, valida que `public.is_admin()` OU `public.is_fiscal_halls(NEW.semana_ano, NEW.ano)`. Caso contrário, bloqueia com exceção: `'Apenas moradores do quarto escalado no Halls ou o Admin podem fiscalizar tarefas.'`.
+     - **Auditoria Automática:** Preenche `registrado_por`/`enviado_em` e `fiscalizado_por`/`fiscalizado_em` com base em `auth.uid()`.
+   * **Trigger `trg_faxina_reprovado_falta` (`AFTER INSERT OR UPDATE OF fiscal_status ON public.registro_diario_faxina`):**
+     - Em caso de reprovação expressa (`NEW.fiscal_status = 'reprovado'`), incrementa automaticamente `pontos_faltas = pontos_faltas + 1` em `public.escala_semanal_faxina` para aquele `(quarto_id, semana_ano, ano)`.
+   * **Políticas RLS Refinadas:**
+     - **`areas_comuns`**: `SELECT` público (`anon, authenticated`); `ALL` para administradores e moradores ativos.
+     - **`escala_semanal_faxina`**: `SELECT` público (`anon, authenticated`); escrita manual direta restrita a `public.is_admin()` (o rodízio automático e o acréscimo de faltas rodam com privilégios de banco via `SECURITY DEFINER`).
+     - **`regras_quadro_pontos`**: `SELECT` público (`anon, authenticated`); escrita (`INSERT, UPDATE, DELETE`) restrita a `public.is_admin()`.
+     - **`registro_diario_faxina`**: `SELECT` público (`anon, authenticated`); escrita aberta a moradores ativos e admin, com validação obrigatória no nível de banco via trigger.
+   * **Rotinas Agendadas Nativas via `pg_cron` (Supabase):**
+     - `0 4 * * *` (01:00 BRT / 04:00 UTC): Executa `public.processar_corte_diario_01h()`. Audita ontem e penaliza com falta quartos sem foto (`status = 'faltou'`). Aos domingos (`EXTRACT(DOW FROM v_hoje) = 0`), avança automaticamente o rodízio da semana.
+     - `0 14 * * *` (11:00 BRT / 14:00 UTC): Executa `public.processar_auditoria_fiscal_11h()`. Marca tarefas de ontem sem avaliação como `fiscal_status = 'omitido'`. Se houver omissões e o Halls não faltou por foto, aplica no máximo +1 falta ao quarto do Halls.
+     - `*/15 * * * *`: Executa `public.verificar_penalidades_pontos_24h()`.
+   * **Deploy Contínuo e Caching (`vercel.json` & `netlify.toml`):** Configuração de rewrite SPA para `/index.html` e cabeçalhos `Cache-Control: public, max-age=0, must-revalidate` para `sw.js`, `registerSW.js` e `manifest.webmanifest`, garantindo atualização imediata do PWA.
    * **Realtime:** Transmitida via publicação `supabase_realtime` para atualização instantânea em todos os dispositivos da casa.
 
 ---
@@ -632,12 +643,18 @@ flowchart LR
 - [x] **Canais de Comunicação (Chats):**
   - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes, protegidos por RLS database-first restrito aos membros de cada comissão e Administradores.
 
-### Fase 5: Notificações Web Push, Otimizações PWA & Deploy
-- [ ] Configuração do Service Worker para envio e recepção de Web Push Notifications.
+### Fase 5: Migração Database-First, Notificações & Deploy
+- [x] **Migração 100% Database-First das Regras da Faxina para o Supabase:**
+  - Eliminação do backend Express em produção.
+  - Regras de negócio, cálculo de faltas e validações via Triggers e RLS no PostgreSQL.
+  - Funções RPC nativas (`avancar_rodizio_faxina`, `garantir_quadro_faxina_atual`, `processar_corte_diario_01h`, `processar_auditoria_fiscal_11h`).
+  - Agendamentos automáticos nativos via `pg_cron` (01:00 BRT e 11:00 BRT).
+- [x] **Configuração de Deploy Contínuo Estático (`vercel.json` & `netlify.toml`):**
+  - Rewrite SPA para `index.html`.
+  - Cabeçalhos de cache otimizados para PWA (`sw.js`, `manifest.webmanifest`).
+- [ ] Configuração do Service Worker para envio e recepção de Web Push Notifications (chaves VAPID).
 - [ ] Notificações para:
   - Lembrete de envio de foto de faxina diária.
   - Notificação de funça atribuída.
   - Alerta de ponto individual recebido.
-- [ ] Otimização de caching offline para listas de misturas e tarefas.
 - [ ] Testes de usabilidade no iOS (Safari Add to Home Screen) e Android (Chrome PWA).
-- [ ] Deploy contínuo (Vercel ou Netlify) integrado ao Supabase.
