@@ -3,6 +3,41 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
+export const workboxConfig = {
+  globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+  runtimeCaching: [
+    {
+      urlPattern: /^https?:\/\/.*\/rest\/v1\/.*/i,
+      handler: 'NetworkFirst' as const,
+      options: {
+        cacheName: 'supabase-api-cache',
+        networkTimeoutSeconds: 4,
+        expiration: {
+          maxEntries: 100,
+          maxAgeSeconds: 24 * 60 * 60, // 24h
+        },
+        cacheableResponse: {
+          statuses: [0, 200],
+        },
+      },
+    },
+    {
+      urlPattern: /^https?:\/\/.*\/storage\/v1\/object\/public\/.*/i,
+      handler: 'CacheFirst' as const,
+      options: {
+        cacheName: 'supabase-storage-images',
+        expiration: {
+          maxEntries: 150,
+          maxAgeSeconds: 7 * 24 * 60 * 60, // 7 dias
+        },
+        cacheableResponse: {
+          statuses: [0, 200],
+        },
+      },
+    },
+  ],
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   server: {
@@ -22,6 +57,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['logo.png', 'bandeira.png', 'favicon.svg'],
+      workbox: workboxConfig,
       manifest: {
         name: 'República Canta Grillo',
         short_name: 'Canta Grillo',
