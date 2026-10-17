@@ -289,15 +289,32 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - **Link do Drive da República (`public.house_settings`):** Armazenado de forma protegida na tabela `house_settings` (`chave = 'drive_url'`). Moradores ativos têm permissão de leitura (`SELECT`), enquanto a alteração (`INSERT`, `UPDATE`, `DELETE`) é restrita **exclusivamente ao Administrador** (`public.is_admin()`).
 - **Abertura em Nova Aba:** Ambos os links abrem em uma nova aba/janela do navegador (`target="_blank" rel="noopener noreferrer"`), fora do app.
 
-### RN13 - Autenticação, Aprovação de Moradores e Políticas RLS (Database-First)
+### RN13 - Autenticação, Meu Perfil, Gestão de Moradores e Políticas RLS (Database-First)
 - **Criação de Contas:** Clientes não possuem permissão de `INSERT` na tabela `public.profiles`. O registro ocorre exclusivamente via gatilho de banco de dados (`handle_new_user()` em `SECURITY DEFINER`), garantindo que todo novo morador nasça com `ativo = false` e `role = 'morador'`.
-- **Aprovação:** Enquanto `ativo = false`, o morador tem o acesso bloqueado e permanece na tela de "Cadastro em Análise". Somente o Administrador (`role = 'admin'` e `ativo = true`) pode aprovar o perfil (`ativo = true`), via `AprovacoesScreen`.
-- **Políticas RLS e Trigger de Proteção em `public.profiles`:**
+- **Tela "Meu Perfil & Quarto" (`MeuPerfilScreen.tsx`):**
+  - Acessível a qualquer morador ativo através da aba `Casa` e pelo toque no cabeçalho de geração/quarto na `Home`.
+  - **Configuração de Foto de Perfil (Avatar):**
+    - Permite tirar foto com a câmera do celular ou escolher imagem da galeria (`input[type="file"]`).
+    - Validação de formato (apenas imagens) e limite de tamanho bruto (máximo 5MB).
+    - Recorte central automático em proporção quadrada e compressão inteligente client-side (512x512 pixels em JPEG 85%), gerando arquivo leve (~50-80KB) ideal para conexões móveis.
+    - Upload automático para o bucket público `avatars` do Supabase Storage, persistindo a URL pública em `public.profiles.avatar_url`.
+    - Fallback resiliente: caso o Supabase Storage esteja momentaneamente indisponível, armazena Data URL base64 mantendo a interface 100% operacional.
+    - Opção de remover a foto existente a qualquer momento (`avatar_url = null`).
+  - Permite a edição imediata do **Apelido na República** (destaque de interface), **Nome Completo** e **Quarto Atual** (`quarto_id` vinculado a `public.rooms`).
+  - O campo **Geração** permanece em somente-leitura para moradores comuns (com aviso orientador na interface), sendo editável unicamente por administradores.
+  - Ao salvar, a atualização via Supabase atualiza a sessão imediatamente com `refreshProfile()`.
+- **Central de Gestão de Membros da Casa (Exclusivo Admin - `AprovacoesScreen.tsx`):**
+  - **Aba Pendentes (`ativo = false`):** Aprovação de novos moradores (`ativo = true`) ou recusa/remoção (`DELETE`), com exibição de avatar ou iniciais.
+  - **Aba Moradores Ativos (`role IN ('morador', 'admin') AND ativo = true`):** Lista todos os membros da república com foto, permitindo ao Administrador editar apelido, nome, geração, quarto atual, alternar cargo (`morador` <-> `admin`), remover foto inadequada, desativar acesso (`ativo = false`) ou remover o morador da base.
+  - **Proteção de Auto-Preservação do Admin:** O Admin logado é estritamente impedido de rebaixar seu próprio cargo, desativar seu próprio acesso ou excluir a si mesmo da república, evitando perda acidental de governança do sistema.
+  - **Aba Convidados Externos (`role = 'externo'`):** Centraliza os agregados da folha de misturas com foto/iniciais, exibindo telefone/WhatsApp com link direto, alternância de status ativo/inativo e edição cadastral.
+- **Políticas RLS e Trigger de Proteção em `public.profiles` e `storage.objects`:**
   - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`). Usuários anônimos não podem listar moradores.
-  - `INSERT`: Bloqueado para clientes (exclusivo do gatilho no PostgreSQL).
-  - `UPDATE`: Administradores podem atualizar qualquer perfil. Moradores comuns podem atualizar apenas seus próprios dados cadastrais permitidos (nome, apelido), com validação dupla: cláusula `WITH CHECK` e gatilho de proteção `trg_protect_profile_roles` que lança exceção em qualquer tentativa de auto-aprovação (`ativo = true`) ou auto-promoção (`role = 'admin'`).
-  - `DELETE`: Exclusivo para administradores (recusa de cadastro).
-- **Leitura de Quartos:** A tabela `public.rooms` possui política de leitura aberta (`anon` e `authenticated`) para viabilizar a seleção de quarto durante o formulário de cadastro inicial.
+  - `INSERT`: Bloqueado para clientes (exclusivo do gatilho `handle_new_user` no PostgreSQL).
+  - `UPDATE`: Administradores podem atualizar qualquer perfil. Moradores comuns podem atualizar apenas seus próprios dados cadastrais permitidos (nome, apelido, quarto, avatar_url), com validação dupla: cláusula `WITH CHECK` e gatilho de proteção `trg_protect_profile_roles` (`public.protect_profile_roles()`) que lança exceção em qualquer tentativa de auto-aprovação (`ativo = true`), auto-promoção (`role = 'admin'`) ou alteração de geração (`geracao`), blindando a hierarquia Veterano -> Bixo.
+  - `DELETE`: Exclusivo para administradores (`public.is_admin()`).
+  - **Storage Bucket `avatars`:** Bucket público com RLS em `storage.objects`: `SELECT` aberto para leitura pública; `INSERT`, `UPDATE` e `DELETE` restritos ao dono da imagem autenticado (`name LIKE 'avatar_' || auth.uid() || '_%'`) ou Administradores (`public.is_admin()`).
+- **Leitura de Quartos:** A tabela `public.rooms` possui política de leitura aberta (`anon` e `authenticated`) para viabilizar a seleção de quarto durante o formulário de cadastro inicial e na tela de perfil.
 
 ### RN14 - Governança das Frentes e Co-Lideranças (Database-First RLS)
 - **Visualização:** Qualquer morador autenticado pode consultar os integrantes e líderes de cada frente (`SELECT` em `front_members`).

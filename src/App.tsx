@@ -14,6 +14,7 @@ import { QuadroPontosScreen } from './features/faxina/QuadroPontosScreen';
 import { CervejasScreen } from './features/cervejas/CervejasScreen';
 import { FuncasScreen } from './features/funcas/FuncasScreen';
 import { AtasScreen } from './features/atas/AtasScreen';
+import { MeuPerfilScreen } from './features/perfil/MeuPerfilScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
@@ -25,7 +26,7 @@ type Screen =
   | 'home' | 'rotina' | 'casa'
   | 'misturas' | 'quadro' | 'pontoBagunca'
   | 'funcas' | 'cervejas' | 'frentes'
-  | 'aprovacoes' | 'atas';
+  | 'aprovacoes' | 'atas' | 'perfil';
 
 const chevron = <span className="text-muted">›</span>;
 
@@ -341,12 +342,32 @@ function MainApp() {
         return (
           <>
             <div className="pt-2 pb-6">
-              <p className="text-sm text-muted">
-                {geracaoExibicao} · {quartoExibicao}
-              </p>
-              <h2 className="text-3xl font-semibold tracking-tight text-ink mt-1">
-                Salve, {nomeExibicao}
-              </h2>
+              <button
+                type="button"
+                onClick={() => go('perfil')}
+                className="text-left group cursor-pointer focus:outline-none flex items-center gap-3.5"
+              >
+                {profile?.avatar_url ? (
+                  <img
+                    src={profile.avatar_url}
+                    alt="Foto de perfil"
+                    className="w-13 h-13 rounded-full object-cover border-2 border-forest/20 group-hover:border-forest transition-colors shrink-0 shadow-xs"
+                  />
+                ) : (
+                  <div className="w-13 h-13 rounded-full bg-mint text-forest font-bold text-lg flex items-center justify-center shrink-0 border border-line group-hover:border-forest transition-colors shadow-xs">
+                    {(nomeExibicao || 'M').charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm text-muted group-hover:text-forest transition-colors flex items-center gap-1">
+                    <span>{geracaoExibicao} · {quartoExibicao}</span>
+                    <span className="text-xs opacity-60">›</span>
+                  </p>
+                  <h2 className="text-3xl font-semibold tracking-tight text-ink mt-0.5 group-hover:text-forest transition-colors truncate">
+                    Salve, {nomeExibicao}
+                  </h2>
+                </div>
+              </button>
             </div>
 
             {/* Carrossel de pontos de bagunça com blur, 24h e thread */}
@@ -454,11 +475,19 @@ function MainApp() {
         return (
           <>
             <PageTitle title="Casa" hint="Organização da república" />
+            <Section title="Sua Conta">
+              <Row
+                title="Meu Perfil & Quarto"
+                meta="Editar apelido ou trocar de quarto na rep"
+                onClick={() => go('perfil')}
+                right={chevron}
+              />
+            </Section>
             {profile?.role === 'admin' && (
               <Section title="Administração da Casa">
                 <Row
-                  title="Aprovações de Moradores"
-                  meta="Liberar acesso de novos membros"
+                  title="Gestão de Membros"
+                  meta="Aprovações, moradores ativos e convidados"
                   onClick={() => go('aprovacoes')}
                   right={chevron}
                 />
@@ -470,7 +499,7 @@ function MainApp() {
                 />
               </Section>
             )}
-            <Section>
+            <Section title="República">
               <Row title="Funças" meta="Tarefas gerais e das frentes" onClick={() => go('funcas')} right={chevron} />
               <Row title="Frentes" meta="10 frentes e seus chats" onClick={() => go('frentes')} right={chevron} />
               <Row title="Cervejas" meta="Caixas devidas e baixas" onClick={() => go('cervejas')} right={chevron} />
@@ -524,6 +553,9 @@ function MainApp() {
 
       case 'atas':
         return <AtasScreen onBack={goBack} />;
+
+      case 'perfil':
+        return <MeuPerfilScreen onBack={goBack} />;
     }
   };
 
