@@ -355,9 +355,14 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 
 ### 5.1 Plataforma e Distribuição
 - **PWA (Progressive Web App):**
-  - Instalável via navegador no Android (Chrome - Web APK) e iOS (Safari - Adicionar à Tela de Início).
-  - Ícone dedicado, modo tela cheia (*standalone*) e splash screen.
-  - Service Worker para cache da aplicação e carregamento instantâneo.
+  - **Instalação Nativa com 1 Clique (Android / Chrome / Edge):** Captura o evento nativo `beforeinstallprompt` exibindo banner editorial dispensável na Home e card de instalação fixo na aba Casa.
+  - **Instalação Guiada Passo a Passo (iOS / Safari):** Detecta dispositivos iOS fora do modo standalone e exibe modal ilustrado com instruções de toque em "Compartilhar" e "Adicionar à Tela de Início".
+  - **Ocultação Automática em Standalone:** Quando o morador já abriu o app como PWA instalado (`display-mode: standalone` ou `navigator.standalone === true`), todos os banners de instalação são suprimidos da interface.
+  - **Indicador de Modo Offline (`OfflineBanner`):** Barra superior de status que surge no topo do shell quando `navigator.onLine === false`, informando que os dados em tela estão em cache e sincronizarão assim que a rede retornar.
+  - **Cache Offline Inteligente (Workbox Runtime Caching):**
+    - Estratégia `NetworkFirst` (com timeout de 4 segundos e cache de 24 horas) para a REST API do Supabase (`/rest/v1/.*`), permitindo consulta de misturas, quadro de pontos, funças e frentes mesmo sem sinal de internet.
+    - Estratégia `CacheFirst` (com limite de 150 imagens e expiração de 7 dias) para fotos armazenadas no Supabase Storage (`/storage/v1/object/public/.*`).
+    - Pré-cacheamento automático (`globPatterns`) de todos os assets compilados (`js`, `css`, `html`, `ico`, `png`, `svg`, `woff2`).
 
 ### 5.2 Central de Notificações In-App (Sino) & Browser Push (Feature 1)
 O aplicativo dispõe de uma Central de Notificações unificada acessível via ícone de Sino no Header superior, integrada com Notificações Nativas do Navegador (Browser Push via Web Push / Service Worker) e sincronização em tempo real via Supabase Realtime, operando por Derivação Inteligente no Cliente + Agendador de Horários (60s em fuso `America/Sao_Paulo`).

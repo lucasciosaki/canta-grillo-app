@@ -657,7 +657,7 @@ flowchart LR
 - [x] **Canais de Comunicação (Chats):**
   - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes, protegidos por RLS database-first restrito aos membros de cada comissão e Administradores.
 
-### Fase 5: Central de Notificações Completa (Sino), Browser Push & Sincronização em Tempo Real (Feature 1)
+### Fase 5: Central de Notificações, Otimizações PWA & Deploy
 - [x] **Central de Notificações In-App (Sino do Header) & Browser Push:**
   - **Sino no Header:** Badge numérico dinâmico em terracota (`bg-clay`) exibindo a contagem real de notificações não lidas.
   - **NotificationsDrawer:** Painel deslizante com abas (`Todas` / `Não lidas`), botão "Marcar todas como lidas", banner para solicitar permissão nativa de notificações, tags de urgência e navegação direta ao clicar no item.
@@ -671,8 +671,17 @@ flowchart LR
   - **Browser Push Nativo & Deduplicação Persistente:** Disparo via `navigator.serviceWorker.ready` (`showNotification`) com fallback para `new Notification()`, persistindo IDs disparados em `localStorage` (`canta_grillo_notified_events_v1`) para evitar múltiplos pushes repetidos.
   - **Supabase Realtime Hub Unificado (`realtime_notifications_hub`):** Escuta de eventos em 14 tabelas (`pontos_bagunca`, `mensagens_ponto_bagunca`, `pontos_bagunca_visualizacoes`, `escala_semanal_faxina`, `registro_diario_faxina`, `mensagens_frente`, `front_members`, `funcas`, `funca_atribuicoes`, `solicitacoes_mercado`, `dogs_refeicoes_diarias`, `daily_meals`, `caixas_cerveja`, `profiles`).
   - **Suíte de Testes Automatizados:** 100% dos 20 gatilhos cobertos em testes unitários automatizados em `tests/unit/notificacoes-logic.test.mjs`.
-
-- [ ] Otimização de caching offline para listas de misturas e tarefas.
-- [ ] Testes de usabilidade em dispositivos reais no iOS (Safari Add to Home Screen) e Android (Chrome PWA).
+- [x] **Otimização de Service Worker & Cache Offline:**
+  - Configuração do Workbox em `vite.config.ts` com `globPatterns` cobrindo assets estáticos (`js`, `css`, `html`, `ico`, `png`, `svg`, `woff2`).
+  - Cache dinâmico da REST API do Supabase (`/rest/v1/.*`) com estratégia `NetworkFirst` (`networkTimeoutSeconds: 4`, expiração 24h) garantindo acesso offline a misturas, funças, pontos e frentes.
+  - Cache de fotos do Supabase Storage (`/storage/v1/object/public/.*`) com estratégia `CacheFirst` (150 imagens, expiração 7 dias).
+- [x] **Convite de Instalação Nativo Android / iOS & Modo Standalone:**
+  - Hook reativo `usePWA.ts` para detecção de standalone (`display-mode: standalone` e `navigator.standalone`), detecção de plataforma (`isIOS`, `isAndroid`) e persistência de dispensa (`canta_grillo_pwa_banner_dismissed_v1`).
+  - `HomeInstallBanner`: Banner editorial Warm Paper dispensável exibido na Home apenas quando não instalado.
+  - `CasaInstallCard`: Atalho discreto fixado na aba Casa para instalação a qualquer momento.
+  - `IOSInstructionsModal`: Modal ilustrado passo a passo para instalação no Safari do iOS (Compartilhar -> Adicionar à Tela de Início).
+  - Captura do evento nativo `beforeinstallprompt` para instalação com 1 clique no Android/Chrome.
+- [x] **Indicador de Modo Offline (`OfflineBanner`):**
+  - Barra superior no topo do `MobileShell` exibida automaticamente quando `navigator.onLine === false`, informando que os dados em tela estão em cache.
 - [ ] Deploy contínuo (Vercel ou Netlify) integrado ao Supabase.
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Header } from './Header';
 import { BottomNav, type MainTab } from './BottomNav';
+import { OfflineBanner } from '../feedback/PWAInstallBanner';
 
 interface MobileShellProps {
   children: React.ReactNode;
@@ -25,6 +26,7 @@ export const MobileShell: React.FC<MobileShellProps> = ({
 }) => (
   <div className="min-h-dvh bg-paper text-ink">
     <div className="w-full max-w-md mx-auto min-h-dvh flex flex-col">
+      <OfflineBanner />
       <Header
         title={title}
         subtitle={subtitle}

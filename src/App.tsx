@@ -3,6 +3,7 @@ import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
 import { useHouseLinks } from './hooks/useHouseLinks';
+import { HomeInstallBanner, CasaInstallCard } from './components/feedback/PWAInstallBanner';
 import { PontosBaguncaCarousel } from './components/PontosBaguncaCarousel';
 import { useAuth } from './contexts/AuthContext';
 import { AuthGuard } from './components/auth/AuthGuard';
@@ -370,6 +371,9 @@ function MainApp() {
               </button>
             </div>
 
+            {/* Banner dispensável de instalação PWA */}
+            <HomeInstallBanner />
+
             {/* Carrossel de pontos de bagunça com blur, 24h e thread */}
             <PontosBaguncaCarousel
               pontos={pontosBagunca}
@@ -475,6 +479,7 @@ function MainApp() {
         return (
           <>
             <PageTitle title="Casa" hint="Organização da república" />
+            <CasaInstallCard />
             <Section title="Sua Conta">
               <Row
                 title="Meu Perfil & Quarto"
