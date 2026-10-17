@@ -2030,8 +2030,8 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
--- 2. Habilitação de RLS em storage.objects
-ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+-- 2. Nota: storage.objects já possui Row Level Security (RLS) habilitado nativamente
+-- no Supabase (sob propriedade de supabase_storage_admin). Não executar ALTER TABLE aqui.
 
 -- 3. Leitura pública de fotos de perfil
 DROP POLICY IF EXISTS "Avatars sao publicamente acessiveis" ON storage.objects;
@@ -2085,11 +2085,11 @@ USING (
 -- ==============================================================================
 -- 11. AGENDAMENTO AUTOMÁTICO DE ROTINAS VIA PG_CRON (SUPABASE NATIVO)
 -- ==============================================================================
--- Habilita a extensão pg_cron (caso esteja disponível na instância Postgres/Supabase)
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
 DO $$
 BEGIN
+  -- Tenta habilitar a extensão pg_cron (caso esteja disponível na instância Postgres/Supabase)
+  CREATE EXTENSION IF NOT EXISTS pg_cron;
+
   IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
     BEGIN
       PERFORM cron.unschedule('faxina_corte_diario_01h');
