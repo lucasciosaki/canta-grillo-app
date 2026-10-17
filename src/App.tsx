@@ -16,6 +16,9 @@ import { FuncasScreen } from './features/funcas/FuncasScreen';
 import { supabase } from './lib/supabaseClient';
 import { getLocalDateString, numericToMarca } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
+import { useNotifications } from './hooks/useNotifications';
+import { NotificationsDrawer } from './features/notificacoes/NotificationsDrawer';
+import type { NotificationTargetScreen } from './types/notificacoes';
 
 type Screen =
   | 'home' | 'rotina' | 'casa'
@@ -41,7 +44,40 @@ function MainApp() {
   const [funcasReais, setFuncasReais] = useState<any[]>([]);
   const [frenteFiltroFuncas, setFrenteFiltroFuncas] = useState<string | null>(null);
 
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const {
+    notifications,
+    unreadCount,
+    permission,
+    requestPermission,
+    markAsRead,
+    markAllAsRead,
+  } = useNotifications();
+
   const screen = stack[stack.length - 1];
+
+  const handleNavigateFromNotification = (
+    targetScreen: NotificationTargetScreen,
+    params?: Record<string, any>
+  ) => {
+    setIsNotificationsOpen(false);
+    if (targetScreen === 'home') {
+      setStack(['home']);
+    } else if (targetScreen === 'misturas') {
+      setStack(['rotina', 'misturas']);
+    } else if (targetScreen === 'quadro') {
+      setStack(['rotina', 'quadro']);
+    } else if (targetScreen === 'funcas') {
+      if (params?.frenteId) setFrenteFiltroFuncas(params.frenteId);
+      setStack(['casa', 'funcas']);
+    } else if (targetScreen === 'frentes') {
+      setStack(['casa', 'frentes']);
+    } else if (targetScreen === 'cervejas') {
+      setStack(['casa', 'cervejas']);
+    } else if (targetScreen === 'aprovacoes') {
+      setStack(['casa', 'aprovacoes']);
+    }
+  };
 
   // Carrega pontos de bagunça, visualizações e mensagens do Supabase
   const carregarPontosBagunca = useCallback(async () => {
@@ -478,17 +514,34 @@ function MainApp() {
   };
 
   return (
-    <MobileShell
-      currentTab={stack[0] as MainTab}
-      onTabChange={selectTab}
-      title="Canta Grillo"
-      subtitle="República desde 2004"
-      onSignOut={signOut}
-    >
-      {renderContent()}
-    </MobileShell>
+    <>
+      <MobileShell
+        currentTab={stack[0] as MainTab}
+        onTabChange={selectTab}
+        title="Canta Grillo"
+        subtitle="República desde 2004"
+        unreadNotifications={unreadCount}
+        onNotificationsClick={() => setIsNotificationsOpen(true)}
+        onSignOut={signOut}
+      >
+        {renderContent()}
+      </MobileShell>
+
+      <NotificationsDrawer
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        notifications={notifications}
+        unreadCount={unreadCount}
+        permission={permission}
+        onRequestPermission={requestPermission}
+        onMarkAsRead={markAsRead}
+        onMarkAllAsRead={markAllAsRead}
+        onNavigate={handleNavigateFromNotification}
+      />
+    </>
   );
 }
+
 
 export function App() {
   return (

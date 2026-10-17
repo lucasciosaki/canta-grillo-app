@@ -632,12 +632,22 @@ flowchart LR
 - [x] **Canais de Comunicação (Chats):**
   - Criação de canais de bate-papo em tempo real dedicados para cada uma das 10 frentes, protegidos por RLS database-first restrito aos membros de cada comissão e Administradores.
 
-### Fase 5: Notificações Web Push, Otimizações PWA & Deploy
-- [ ] Configuração do Service Worker para envio e recepção de Web Push Notifications.
-- [ ] Notificações para:
-  - Lembrete de envio de foto de faxina diária.
-  - Notificação de funça atribuída.
-  - Alerta de ponto individual recebido.
+### Fase 5: Central de Notificações Completa (Sino), Browser Push & Sincronização em Tempo Real (Feature 1)
+- [x] **Central de Notificações In-App (Sino do Header) & Browser Push:**
+  - **Sino no Header:** Badge numérico dinâmico em terracota (`bg-clay`) exibindo a contagem real de notificações não lidas.
+  - **NotificationsDrawer:** Painel deslizante com abas (`Todas` / `Não lidas`), botão "Marcar todas como lidas", banner para solicitar permissão nativa de notificações, tags de urgência e navegação direta ao clicar no item.
+  - **Motor de Derivação Inteligente no Cliente (`deriveNotifications`):** Avaliação pura, reativa e determinística dos 20 gatilhos oficiais a partir do estado consolidado do Supabase.
+  - **Agendador Periódico no Cliente (Fuso `America/Sao_Paulo`):** Checagem a cada 60s para disparar pontualmente alertas de horários críticos:
+    - **15:00h e 21:00h BRT:** Lembrete da Folha de Misturas (almoço pendente se 0 misturas às 15h, janta pendente se < 1.0 misturas às 21h).
+    - **11:00h e 21:00h BRT:** Lembretes de alimentação dos cães na Frente Dogs (manhã às 11h, noite às 21h).
+    - **00:00h–00:59h BRT:** Urgência de envio da foto da faxina antes do corte das 01:00h.
+    - **10:00h–10:59h BRT:** Urgência de fiscalização do Halls antes do corte das 11:00h.
+    - **Prazo $\le 1$h das 24h:** Ponto de bagunça prestes a expirar sem visualização do morador.
+  - **Browser Push Nativo & Deduplicação Persistente:** Disparo via `navigator.serviceWorker.ready` (`showNotification`) com fallback para `new Notification()`, persistindo IDs disparados em `localStorage` (`canta_grillo_notified_events_v1`) para evitar múltiplos pushes repetidos.
+  - **Supabase Realtime Hub Unificado (`realtime_notifications_hub`):** Escuta de eventos em 14 tabelas (`pontos_bagunca`, `mensagens_ponto_bagunca`, `pontos_bagunca_visualizacoes`, `escala_semanal_faxina`, `registro_diario_faxina`, `mensagens_frente`, `front_members`, `funcas`, `funca_atribuicoes`, `solicitacoes_mercado`, `dogs_refeicoes_diarias`, `daily_meals`, `caixas_cerveja`, `profiles`).
+  - **Suíte de Testes Automatizados:** 100% dos 20 gatilhos cobertos em testes unitários automatizados em `tests/unit/notificacoes-logic.test.mjs`.
+
 - [ ] Otimização de caching offline para listas de misturas e tarefas.
-- [ ] Testes de usabilidade no iOS (Safari Add to Home Screen) e Android (Chrome PWA).
+- [ ] Testes de usabilidade em dispositivos reais no iOS (Safari Add to Home Screen) e Android (Chrome PWA).
 - [ ] Deploy contínuo (Vercel ou Netlify) integrado ao Supabase.
+

@@ -341,11 +341,40 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - Ícone dedicado, modo tela cheia (*standalone*) e splash screen.
   - Service Worker para cache da aplicação e carregamento instantâneo.
 
-### 5.2 Notificações e Engajamento
-- **Web Push Notifications:**
-  - Lembrete de envio de fotos de faxina antes do horário limite.
-  - Alerta de marcação de ponto individual recebido.
-  - Notificações de novos chamados atribuídos na reunião ou pelo líder da frente.
+### 5.2 Central de Notificações In-App (Sino) & Browser Push (Feature 1)
+O aplicativo dispõe de uma Central de Notificações unificada acessível via ícone de Sino no Header superior, integrada com Notificações Nativas do Navegador (Browser Push via Web Push / Service Worker) e sincronização em tempo real via Supabase Realtime, operando por Derivação Inteligente no Cliente + Agendador de Horários (60s em fuso `America/Sao_Paulo`).
+
+- **Experiência do Usuário (Sino & Drawer):**
+  - **Contador Numérico Real:** O sino no Header exibe badge numérico em terracota (`bg-clay`) com o total exato de notificações pendentes/não lidas.
+  - **Painel Deslizante (Drawer):** Ao tocar no sino, desliza painel lateral com abas rápidas (`Todas` / `Não lidas`), botão "Marcar todas como lidas", banner de solicitação de permissão nativa caso ainda não concedida, e etiquetas visuais de urgência (`urgente`, `normal`, `info`).
+  - **Navegação Direta:** Ao tocar em qualquer notificação, o painel fecha automaticamente e realiza navegação direta para a tela de destino correspondente (`home`, `misturas`, `quadro`, `funcas`, `frentes`, `cervejas`, `aprovacoes`).
+  - **Deduplicação Persistente:** Histórico persistido em `localStorage` (`canta_grillo_notified_events_v1`) para assegurar que cada evento ou corte horário dispare exatamente 1 push no dispositivo do morador.
+
+#### Catálogo dos 20 Gatilhos Oficiais de Notificação:
+1. **Novo Ponto de Bagunça Aberto (`public.pontos_bagunca` - `INSERT`):** Push imediato e item não lido no Sino para todos os moradores ativos (exceto o relator). Fica não lido até abertura da foto em `pontos_bagunca_visualizacoes` -> Destino: `home`.
+2. **Urgência — Ponto de Bagunça a $\le 1$h de Expirar as 24h:** Alerta crítico no topo do Sino e push urgente quando restar $\le 60\text{ min}$ para completar 24h e o morador ainda não visualizou a foto -> Destino: `home`.
+3. **Ponto Individual Creditado (`public.pontos_bagunca`):** Notifica quando um ponto é atribuído ou assumido pelo morador logado, informando a contagem de faltas do mês vigente (`X/7 pontos`) -> Destino: `home`.
+4. **Ponto de Falta Lançado no Quadro de Faxina:** Push imediato e alerta urgente quando o quarto do morador recebe falta (`status = 'faltou'` às 01:00h, `fiscal_status = 'reprovado'` ou `'omitido'`) -> Destino: `quadro`.
+5. **Urgência — Foto da Faxina do Quarto a $\le 1$h do Corte das 01:00 BRT:** Alerta urgente entre `00:00` e `00:59` BRT se o quarto estiver escalado na semana e ainda não enviou a foto de comprovação -> Destino: `quadro`.
+6. **Nova Foto Enviada para o Fiscal Avaliar:** Exclusivo para moradores do quarto escalado no **Halls (Fiscal)** quando outro quarto conclui a faxina (`cumprido` e `fiscal_status = 'pendente'`) -> Destino: `quadro`.
+7. **Urgência — Fiscalização do Halls a $\le 1$h do Corte das 11:00 BRT:** Alerta urgente entre `10:00` e `10:59` BRT exclusivo para moradores do quarto Halls quando houver fotos de ontem aguardando avaliação -> Destino: `quadro`.
+8. **Nova Mensagem nos Chats das Frentes (`public.mensagens_frente` - `INSERT`):** Push imediato e item no Sino para integrantes da frente correspondente (exceto autor) -> Destino: `frentes`.
+9. **Nova Mensagem no Chat de Ponto de Bagunça Aberto (`public.mensagens_ponto_bagunca` - `INSERT`):** Alerta em discussões abertas na denúncia -> Destino: `home`.
+10. **Alocação em Frente ou Promoção a Líder (`public.front_members`):** Notifica quando o morador logado é incluído em uma frente ou promovido a Líder -> Destino: `frentes`.
+11. **Funça Atribuída a Você (`public.funca_atribuicoes`):** Notifica nova responsabilidade de tarefa atribuída ao morador -> Destino: `funcas`.
+12. **Nova Funça Aberta na Sua Frente (`public.funcas` - `INSERT`):** Notifica integrantes da frente quando nova tarefa for cadastrada -> Destino: `funcas`.
+13. **Lembrete de Prazo de Funça (Vence Hoje ou Atrasada):** Alerta urgente para tarefas atribuídas com `prazo === hoje` ou `prazo < hoje` -> Destino: `funcas`.
+14. **Pedido de Troca de Funça Recebido:** Alerta urgente quando outro morador solicita troca de funça direcionada ao usuário -> Destino: `funcas`.
+15. **Resposta ao Pedido de Troca de Funça:** Notifica aceitação ou recusa do pedido de troca solicitado pelo morador -> Destino: `funcas`.
+16. **Frente Mercado — Solicitação de Item Faltante (`public.solicitacoes_mercado`):** Exclusivo para integrantes da Frente Mercado quando alguém pede reposição de item (não enviado a administradores a menos que façam parte da frente) -> Destino: `frentes`.
+17. **Frente Dogs — Refeição Pendente às 11:00h e 21:00h BRT:** Exclusivo para integrantes da Frente Dogs (não enviado a administradores a menos que façam parte da frente):
+    - **Às 11:00h BRT (janela 11h–14h59):** Dispara push e alerta se refeição da manhã não foi registrada.
+    - **Às 21:00h BRT (a partir das 21h):** Dispara push e alerta se refeição da noite não foi registrada -> Destino: `frentes`.
+18. **Lembrete Diário da Folha de Misturas (15:00h Almoço e 21:00h Janta BRT):**
+    - **Às 15:00h BRT:** Alerta se `misturas_consumidas === 0` (ainda não marcou almoço).
+    - **Às 21:00h BRT:** Alerta se `misturas_consumidas < 1.0` (ainda não completou janta) -> Destino: `misturas`.
+19. **Caixas de Cerveja & Resposta de Solicitação de Baixa:** Notifica nova caixa de cerveja devida à casa, bem como confirmação (`paga`) ou recusa (`pendente`) da solicitação de baixa pelo Admin -> Destino: `cervejas`.
+20. **Alertas Exclusivos do Administrador (`profile.role === 'admin'`):** Alertas de novos cadastros pendentes de liberação (`aprovacoes`) e solicitações de baixa de cerveja aguardando conferência (`cervejas`).
 
 ### 5.3 Otimização de Imagens e Armazenamento
 - **Compressão Automática:** Como haverá envio diário de fotos de limpeza e chamados de manutenção, o app deve realizar compressão de fotos no cliente antes do upload (ex.: WebP/JPEG com limite máximo de 800 KB por foto) para economizar dados móveis e armazenamento em nuvem.

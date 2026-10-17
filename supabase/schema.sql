@@ -1570,7 +1570,9 @@ BEGIN
     'funca_atribuicoes',
     'dogs_refeicoes_diarias',
     'market_catalog',
-    'solicitacoes_mercado'
+    'solicitacoes_mercado',
+    'front_members',
+    'profiles'
   ]
   LOOP
     IF NOT EXISTS (
