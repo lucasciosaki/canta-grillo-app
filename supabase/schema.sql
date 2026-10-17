@@ -92,10 +92,10 @@ CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
     semana_ano INT NOT NULL,
     ano INT NOT NULL,
     data DATE NOT NULL DEFAULT CURRENT_DATE,
-    status TEXT NOT NULL DEFAULT 'cumprido' CHECK (status IN ('cumprido', 'faltou')),
+    status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('cumprido', 'faltou', 'pendente')),
     fotos_comprovacao TEXT[] NOT NULL DEFAULT '{}',
     registrado_por UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
-    enviado_em TIMESTAMPTZ DEFAULT NOW(),
+    enviado_em TIMESTAMPTZ,
     
     -- Avaliação do Fiscal (Halls)
     fiscal_status TEXT NOT NULL DEFAULT 'pendente' CHECK (fiscal_status IN ('pendente', 'aprovado', 'reprovado', 'omitido')),
@@ -108,6 +108,11 @@ CREATE TABLE IF NOT EXISTS public.registro_diario_faxina (
         REFERENCES public.escala_semanal_faxina(quarto_id, area_comum_id, semana_ano, ano) ON DELETE CASCADE,
     CONSTRAINT unique_escala_dia UNIQUE (quarto_id, area_comum_id, semana_ano, ano, data)
 );
+
+-- Garantir migração suave do check constraint e valor default de status
+ALTER TABLE public.registro_diario_faxina DROP CONSTRAINT IF EXISTS registro_diario_faxina_status_check;
+ALTER TABLE public.registro_diario_faxina ADD CONSTRAINT registro_diario_faxina_status_check CHECK (status IN ('cumprido', 'faltou', 'pendente'));
+ALTER TABLE public.registro_diario_faxina ALTER COLUMN status SET DEFAULT 'pendente';
 
 -- 8.1 REGRAS DE PENALIDADES DO QUADRO DE PONTOS (Configuração Progressiva de 2 a 7 Pontos)
 CREATE TABLE IF NOT EXISTS public.regras_quadro_pontos (
@@ -825,13 +830,104 @@ BEGIN
 END $$;
 
 -- ==============================================================================
--- 6. POLÍTICAS RLS: ÁREAS COMUNS, ESCALA SEMANAL E REGISTRO DIÁRIO DE FAXINA
+-- 6. POLÍTICAS RLS, TRIGGERS E RPCS: ÁREAS COMUNS, ESCALA E FAXINA DIÁRIA
 -- ==============================================================================
 ALTER TABLE public.areas_comuns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.escala_semanal_faxina ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.registro_diario_faxina ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.regras_quadro_pontos ENABLE ROW LEVEL SECURITY;
 
--- AREAS COMUNS: Leitura livre (anon e authenticated, idêntico à tabela rooms)
+-- 6.1 HELPER: Verifica se o usuário atual é o fiscal do Halls na semana ou Administrador
+CREATE OR REPLACE FUNCTION public.is_fiscal_halls(p_semana_ano INT, p_ano INT)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.profiles p
+    JOIN public.escala_semanal_faxina esf 
+      ON esf.quarto_id = p.quarto_id
+     AND esf.semana_ano = p_semana_ano
+     AND esf.ano = p_ano
+    JOIN public.areas_comuns ac 
+      ON ac.id = esf.area_comum_id
+    WHERE p.id = auth.uid()
+      AND p.ativo = true
+      AND LOWER(TRIM(ac.nome)) = 'halls'
+  ) OR public.is_admin();
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 6.2 TRIGGER DE VALIDAÇÃO: Envio de foto pelo próprio quarto e fiscalização pelo Halls/Admin
+CREATE OR REPLACE FUNCTION public.validate_and_apply_faxina_rules()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_user_quarto_id UUID;
+BEGIN
+  -- Se executado em contexto com usuário autenticado que não seja admin
+  IF auth.uid() IS NOT NULL AND NOT public.is_admin() THEN
+    -- 1. Validação de envio de foto: morador só envia para seu próprio quarto
+    IF NEW.status = 'cumprido' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'cumprido' OR NEW.fotos_comprovacao IS DISTINCT FROM OLD.fotos_comprovacao) THEN
+      SELECT quarto_id INTO v_user_quarto_id
+      FROM public.profiles
+      WHERE id = auth.uid() AND ativo = true;
+
+      IF v_user_quarto_id IS NULL OR v_user_quarto_id <> NEW.quarto_id THEN
+        RAISE EXCEPTION 'Você só pode enviar foto de comprovação para o seu próprio quarto.';
+      END IF;
+    END IF;
+
+    -- 2. Validação de fiscalização: apenas quarto do Halls ou Admin
+    IF NEW.fiscal_status IN ('aprovado', 'reprovado') AND (TG_OP = 'INSERT' OR NEW.fiscal_status IS DISTINCT FROM OLD.fiscal_status) THEN
+      IF NOT public.is_fiscal_halls(NEW.semana_ano, NEW.ano) THEN
+        RAISE EXCEPTION 'Apenas moradores do quarto escalado no Halls ou o Admin podem fiscalizar tarefas.';
+      END IF;
+    END IF;
+  END IF;
+
+  -- Auditoria automática dos registros
+  IF auth.uid() IS NOT NULL THEN
+    IF NEW.status = 'cumprido' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'cumprido') THEN
+      NEW.registrado_por := COALESCE(NEW.registrado_por, auth.uid());
+      NEW.enviado_em := COALESCE(NEW.enviado_em, NOW());
+    END IF;
+
+    IF NEW.fiscal_status IN ('aprovado', 'reprovado') AND (TG_OP = 'INSERT' OR NEW.fiscal_status IS DISTINCT FROM OLD.fiscal_status) THEN
+      NEW.fiscalizado_por := COALESCE(NEW.fiscalizado_por, auth.uid());
+      NEW.fiscalizado_em := COALESCE(NEW.fiscalizado_em, NOW());
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_validate_and_apply_faxina_rules ON public.registro_diario_faxina;
+CREATE TRIGGER trg_validate_and_apply_faxina_rules
+BEFORE INSERT OR UPDATE ON public.registro_diario_faxina
+FOR EACH ROW
+EXECUTE FUNCTION public.validate_and_apply_faxina_rules();
+
+-- 6.3 TRIGGER DE FALTA AUTOMÁTICA: Reprovação expressa pelo fiscal gera falta imediata
+CREATE OR REPLACE FUNCTION public.apply_faxina_reprovado_falta()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.fiscal_status = 'reprovado' AND (TG_OP = 'INSERT' OR OLD.fiscal_status IS DISTINCT FROM 'reprovado') THEN
+    UPDATE public.escala_semanal_faxina
+    SET pontos_faltas = pontos_faltas + 1
+    WHERE quarto_id = NEW.quarto_id
+      AND semana_ano = NEW.semana_ano
+      AND ano = NEW.ano;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_faxina_reprovado_falta ON public.registro_diario_faxina;
+CREATE TRIGGER trg_faxina_reprovado_falta
+AFTER INSERT OR UPDATE OF fiscal_status ON public.registro_diario_faxina
+FOR EACH ROW
+EXECUTE FUNCTION public.apply_faxina_reprovado_falta();
+
+-- 6.4 POLÍTICAS RLS REFINADAS
+-- AREAS COMUNS: Leitura livre (anon e authenticated)
 DROP POLICY IF EXISTS "Leitura de areas comuns" ON public.areas_comuns;
 CREATE POLICY "Leitura de areas comuns"
 ON public.areas_comuns FOR SELECT
@@ -845,29 +941,28 @@ TO authenticated
 USING (public.is_admin() OR public.is_active_morador())
 WITH CHECK (public.is_admin() OR public.is_active_morador());
 
--- ESCALA SEMANAL: Leitura livre (anon e authenticated)
+-- ESCALA SEMANAL: Leitura pública; edições manuais diretas restritas a Admin
 DROP POLICY IF EXISTS "Todos podem ler escala semanal" ON public.escala_semanal_faxina;
 CREATE POLICY "Todos podem ler escala semanal"
 ON public.escala_semanal_faxina FOR SELECT
 TO anon, authenticated
 USING (true);
 
--- ESCALA SEMANAL: Escrita permitida para Admin ou processos de backend
 DROP POLICY IF EXISTS "Admin ou backend gerencia escala semanal" ON public.escala_semanal_faxina;
-CREATE POLICY "Admin ou backend gerencia escala semanal"
+DROP POLICY IF EXISTS "Apenas admin gerencia escala semanal" ON public.escala_semanal_faxina;
+CREATE POLICY "Apenas admin gerencia escala semanal"
 ON public.escala_semanal_faxina FOR ALL
 TO authenticated
-USING (public.is_admin() OR public.is_active_morador())
-WITH CHECK (public.is_admin() OR public.is_active_morador());
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
 
--- REGISTRO DIÁRIO: Leitura livre (anon e authenticated)
+-- REGISTRO DIÁRIO: Leitura livre; escrita validada por triggers
 DROP POLICY IF EXISTS "Todos podem ler registros diarios de faxina" ON public.registro_diario_faxina;
 CREATE POLICY "Todos podem ler registros diarios de faxina"
 ON public.registro_diario_faxina FOR SELECT
 TO anon, authenticated
 USING (true);
 
--- REGISTRO DIÁRIO: Morador ativo pode inserir ou atualizar foto e check
 DROP POLICY IF EXISTS "Moradores ativos e admin registram faxina diaria" ON public.registro_diario_faxina;
 CREATE POLICY "Moradores ativos e admin registram faxina diaria"
 ON public.registro_diario_faxina FOR ALL
@@ -875,9 +970,7 @@ TO authenticated
 USING (public.is_admin() OR public.is_active_morador())
 WITH CHECK (public.is_admin() OR public.is_active_morador());
 
--- REGRAS DO QUADRO DE PONTOS (2 a 7 Pontos): RLS e Realtime
-ALTER TABLE public.regras_quadro_pontos ENABLE ROW LEVEL SECURITY;
-
+-- REGRAS DO QUADRO DE PONTOS: Leitura pública; edição restrita a Admin
 DROP POLICY IF EXISTS "Todos podem ler regras do quadro de pontos" ON public.regras_quadro_pontos;
 CREATE POLICY "Todos podem ler regras do quadro de pontos"
 ON public.regras_quadro_pontos FOR SELECT
@@ -885,13 +978,14 @@ TO anon, authenticated
 USING (true);
 
 DROP POLICY IF EXISTS "Admin ou morador gerencia regras de pontos" ON public.regras_quadro_pontos;
-CREATE POLICY "Admin ou morador gerencia regras de pontos"
+DROP POLICY IF EXISTS "Apenas admin gerencia regras de pontos" ON public.regras_quadro_pontos;
+CREATE POLICY "Apenas admin gerencia regras de pontos"
 ON public.regras_quadro_pontos FOR ALL
 TO authenticated
-USING (public.is_admin() OR public.is_active_morador())
-WITH CHECK (public.is_admin() OR public.is_active_morador());
+USING (public.is_admin())
+WITH CHECK (public.is_admin());
 
--- Habilita Realtime na tabela regras_quadro_pontos
+-- Realtime para regras_quadro_pontos
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -901,6 +995,283 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.regras_quadro_pontos;
   END IF;
 END $$;
+
+-- 6.5 FUNÇÕES RPC NATIVAS NO BANCO DE DADOS (SECURITY DEFINER)
+
+-- RPC 1: Avançar rodízio linear circular oficial dos 6 quartos
+CREATE OR REPLACE FUNCTION public.avancar_rodizio_faxina(p_nova_semana INT, p_novo_ano INT)
+RETURNS VOID AS $$
+DECLARE
+  v_ultimo_ano INT;
+  v_ultima_semana INT;
+  v_area_ids UUID[];
+  v_area_0 UUID;
+  v_area_1 UUID;
+  v_area_2 UUID;
+  v_area_3 UUID;
+  v_area_4 UUID;
+  v_area_5 UUID;
+  r_item RECORD;
+  v_nome_norm TEXT;
+  v_idx INT;
+  v_prox_idx INT;
+  v_nova_area_id UUID;
+BEGIN
+  SELECT ano, semana_ano
+  INTO v_ultimo_ano, v_ultima_semana
+  FROM public.escala_semanal_faxina
+  ORDER BY ano DESC, semana_ano DESC
+  LIMIT 1;
+
+  IF v_ultimo_ano IS NULL THEN
+    RAISE NOTICE 'Nenhuma escala anterior encontrada para rotacionar.';
+    RETURN;
+  END IF;
+
+  SELECT id INTO v_area_0 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de tv' LIMIT 1;
+  SELECT id INTO v_area_1 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de estudos' LIMIT 1;
+  SELECT id INTO v_area_2 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'externo' LIMIT 1;
+  SELECT id INTO v_area_3 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'dispensa' LIMIT 1;
+  SELECT id INTO v_area_4 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'cozinha' LIMIT 1;
+  SELECT id INTO v_area_5 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'halls' LIMIT 1;
+
+  v_area_ids := ARRAY[v_area_0, v_area_1, v_area_2, v_area_3, v_area_4, v_area_5];
+
+  FOR r_item IN
+    SELECT esf.quarto_id, ac.nome AS area_nome
+    FROM public.escala_semanal_faxina esf
+    JOIN public.areas_comuns ac ON ac.id = esf.area_comum_id
+    WHERE esf.ano = v_ultimo_ano AND esf.semana_ano = v_ultima_semana
+  LOOP
+    v_nome_norm := LOWER(TRIM(r_item.area_nome));
+    v_idx := CASE v_nome_norm
+      WHEN 'sala de tv' THEN 0
+      WHEN 'sala de estudos' THEN 1
+      WHEN 'externo' THEN 2
+      WHEN 'dispensa' THEN 3
+      WHEN 'cozinha' THEN 4
+      WHEN 'halls' THEN 5
+      ELSE 0
+    END;
+
+    v_prox_idx := (v_idx + 1) % 6;
+    v_nova_area_id := v_area_ids[v_prox_idx + 1];
+
+    IF v_nova_area_id IS NOT NULL THEN
+      INSERT INTO public.escala_semanal_faxina (
+        quarto_id,
+        area_comum_id,
+        semana_ano,
+        ano,
+        pontos_faltas,
+        penalidade_atribuida
+      ) VALUES (
+        r_item.quarto_id,
+        v_nova_area_id,
+        p_nova_semana,
+        p_novo_ano,
+        0,
+        'Pagar 1 caixa de cerveja para a casa'
+      )
+      ON CONFLICT (quarto_id, area_comum_id, semana_ano, ano) DO NOTHING;
+    END IF;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RPC 2: Garantir quadro da semana e tarefas do dia
+CREATE OR REPLACE FUNCTION public.garantir_quadro_faxina_atual(
+  p_semana_ano INT DEFAULT NULL,
+  p_ano INT DEFAULT NULL,
+  p_data DATE DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_data DATE;
+  v_semana INT;
+  v_ano INT;
+  v_count_escala INT;
+BEGIN
+  v_data := COALESCE(p_data, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE);
+  v_semana := COALESCE(p_semana_ano, TO_CHAR(v_data, 'IW')::INT);
+  v_ano := COALESCE(p_ano, TO_CHAR(v_data, 'IYYY')::INT);
+
+  SELECT COUNT(*) INTO v_count_escala
+  FROM public.escala_semanal_faxina
+  WHERE semana_ano = v_semana AND ano = v_ano;
+
+  IF v_count_escala < 6 AND EXISTS (SELECT 1 FROM public.escala_semanal_faxina) THEN
+    PERFORM public.avancar_rodizio_faxina(v_semana, v_ano);
+
+    SELECT COUNT(*) INTO v_count_escala
+    FROM public.escala_semanal_faxina
+    WHERE semana_ano = v_semana AND ano = v_ano;
+  END IF;
+
+  IF v_count_escala >= 6 THEN
+    INSERT INTO public.registro_diario_faxina (
+      quarto_id,
+      area_comum_id,
+      semana_ano,
+      ano,
+      data,
+      status,
+      fotos_comprovacao,
+      fiscal_status
+    )
+    SELECT
+      esf.quarto_id,
+      esf.area_comum_id,
+      v_semana,
+      v_ano,
+      v_data,
+      'pendente',
+      '{}'::TEXT[],
+      'pendente'
+    FROM public.escala_semanal_faxina esf
+    WHERE esf.semana_ano = v_semana AND esf.ano = v_ano
+    ON CONFLICT (quarto_id, area_comum_id, semana_ano, ano, data) DO NOTHING;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'semana_ano', v_semana,
+    'ano', v_ano,
+    'data', v_data,
+    'escala_configurada', (v_count_escala >= 6)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RPC 3: Processamento do corte diário das 01:00 BRT
+CREATE OR REPLACE FUNCTION public.processar_corte_diario_01h(p_data_ref DATE DEFAULT NULL)
+RETURNS JSONB AS $$
+DECLARE
+  v_hoje DATE;
+  v_ontem DATE;
+  v_prox_semana INT;
+  v_prox_ano INT;
+  v_quartos_penalizados TEXT[] := '{}';
+  v_semana_virada BOOLEAN := FALSE;
+  r_reg RECORD;
+BEGIN
+  v_hoje := COALESCE(p_data_ref, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE);
+  v_ontem := v_hoje - 1;
+
+  FOR r_reg IN
+    SELECT id, quarto_id, semana_ano, ano, status, fotos_comprovacao
+    FROM public.registro_diario_faxina
+    WHERE data = v_ontem
+  LOOP
+    IF (r_reg.fotos_comprovacao IS NULL OR cardinality(r_reg.fotos_comprovacao) = 0 OR r_reg.status <> 'cumprido')
+       AND r_reg.status <> 'faltou' THEN
+      UPDATE public.registro_diario_faxina
+      SET status = 'faltou'
+      WHERE id = r_reg.id;
+
+      UPDATE public.escala_semanal_faxina
+      SET pontos_faltas = pontos_faltas + 1
+      WHERE quarto_id = r_reg.quarto_id
+        AND semana_ano = r_reg.semana_ano
+        AND ano = r_reg.ano;
+
+      v_quartos_penalizados := array_append(v_quartos_penalizados, r_reg.quarto_id::TEXT);
+    END IF;
+  END LOOP;
+
+  -- Se v_hoje for Domingo (DOW = 0), avança rodízio semanal para a próxima semana
+  IF EXTRACT(DOW FROM v_hoje) = 0 THEN
+    v_prox_semana := TO_CHAR(v_hoje + 1, 'IW')::INT;
+    v_prox_ano := TO_CHAR(v_hoje + 1, 'IYYY')::INT;
+    PERFORM public.avancar_rodizio_faxina(v_prox_semana, v_prox_ano);
+    v_semana_virada := TRUE;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'dataAuditada', v_ontem,
+    'quartosPenalizados', to_jsonb(v_quartos_penalizados),
+    'semanaVirada', v_semana_virada
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RPC 4: Processamento da auditoria fiscal das 11:00 BRT
+CREATE OR REPLACE FUNCTION public.processar_auditoria_fiscal_11h(p_data_ref DATE DEFAULT NULL)
+RETURNS JSONB AS $$
+DECLARE
+  v_hoje DATE;
+  v_ontem DATE;
+  v_area_halls_id UUID;
+  r_halls RECORD;
+  v_omissoes INT := 0;
+  v_halls_penalizado BOOLEAN := FALSE;
+BEGIN
+  v_hoje := COALESCE(p_data_ref, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE);
+  v_ontem := v_hoje - 1;
+
+  SELECT id INTO v_area_halls_id
+  FROM public.areas_comuns
+  WHERE LOWER(TRIM(nome)) = 'halls'
+  LIMIT 1;
+
+  IF v_area_halls_id IS NULL THEN
+    RETURN jsonb_build_object('dataAuditada', v_ontem, 'hallsPenalizado', false, 'omissoes', 0);
+  END IF;
+
+  SELECT id, quarto_id, semana_ano, ano, status
+  INTO r_halls
+  FROM public.registro_diario_faxina
+  WHERE data = v_ontem AND area_comum_id = v_area_halls_id
+  LIMIT 1;
+
+  IF r_halls.quarto_id IS NULL THEN
+    SELECT esf.quarto_id, esf.semana_ano, esf.ano, 'pendente' AS status
+    INTO r_halls
+    FROM public.escala_semanal_faxina esf
+    WHERE esf.area_comum_id = v_area_halls_id
+      AND esf.semana_ano = TO_CHAR(v_ontem, 'IW')::INT
+      AND esf.ano = TO_CHAR(v_ontem, 'IYYY')::INT
+    LIMIT 1;
+  END IF;
+
+  IF r_halls.quarto_id IS NULL THEN
+    RETURN jsonb_build_object('dataAuditada', v_ontem, 'hallsPenalizado', false, 'omissoes', 0);
+  END IF;
+
+  WITH updated AS (
+    UPDATE public.registro_diario_faxina
+    SET fiscal_status = 'omitido'
+    WHERE data = v_ontem
+      AND area_comum_id <> v_area_halls_id
+      AND status = 'cumprido'
+      AND fiscal_status = 'pendente'
+    RETURNING id
+  )
+  SELECT COUNT(*) INTO v_omissoes FROM updated;
+
+  IF v_omissoes > 0 AND r_halls.status <> 'faltou' THEN
+    UPDATE public.escala_semanal_faxina
+    SET pontos_faltas = pontos_faltas + 1
+    WHERE quarto_id = r_halls.quarto_id
+      AND semana_ano = r_halls.semana_ano
+      AND ano = r_halls.ano;
+
+    v_halls_penalizado := TRUE;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'dataAuditada', v_ontem,
+    'hallsPenalizado', v_halls_penalizado,
+    'omissoes', v_omissoes
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Grants de execução para funções RPC
+GRANT EXECUTE ON FUNCTION public.is_fiscal_halls(INT, INT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.avancar_rodizio_faxina(INT, INT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.garantir_quadro_faxina_atual(INT, INT, DATE) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.processar_corte_diario_01h(DATE) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.processar_auditoria_fiscal_11h(DATE) TO anon, authenticated;
 
 -- ==============================================================================
 -- 7. POLÍTICAS RLS E TRIGGERS: GESTÃO DE CAIXAS DE CERVEJA (RN07)
@@ -1710,3 +2081,45 @@ USING (
     OR (storage.foldername(name))[1] = auth.uid()::text
   )
 );
+
+-- ==============================================================================
+-- 11. AGENDAMENTO AUTOMÁTICO DE ROTINAS VIA PG_CRON (SUPABASE NATIVO)
+-- ==============================================================================
+-- Habilita a extensão pg_cron (caso esteja disponível na instância Postgres/Supabase)
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    BEGIN
+      PERFORM cron.unschedule('faxina_corte_diario_01h');
+      PERFORM cron.unschedule('faxina_auditoria_fiscal_11h');
+      PERFORM cron.unschedule('pontos_bagunca_24h');
+    EXCEPTION WHEN OTHERS THEN
+      -- ignora se os jobs ainda não existiam
+    END;
+
+    -- 1. Corte diário das 01:00 BRT (04:00 UTC): auditoria de fotos da faxina e virada aos domingos
+    PERFORM cron.schedule(
+      'faxina_corte_diario_01h',
+      '0 4 * * *',
+      'SELECT public.processar_corte_diario_01h();'
+    );
+
+    -- 2. Auditoria do Fiscal das 11:00 BRT (14:00 UTC): omissão de checks pelo Halls
+    PERFORM cron.schedule(
+      'faxina_auditoria_fiscal_11h',
+      '0 14 * * *',
+      'SELECT public.processar_auditoria_fiscal_11h();'
+    );
+
+    -- 3. Verificação de penalidades de 24h em pontos de bagunça (a cada 15 min)
+    PERFORM cron.schedule(
+      'pontos_bagunca_24h',
+      '*/15 * * * *',
+      'SELECT public.verificar_penalidades_pontos_24h();'
+    );
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'pg_cron não pôde ser ativado automaticamente neste ambiente: %', SQLERRM;
+END $$;

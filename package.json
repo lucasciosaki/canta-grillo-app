@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node --test tests/unit/**/*.test.mjs",
+    "test": "node --experimental-strip-types --test tests/unit/**/*.test.mjs src/features/faxina/__tests__/*.test.ts",
     "test:security": "node --test tests/security/**/*.test.mjs",
     "test:all": "node --test tests/**/*.test.mjs",
     "server": "node --experimental-strip-types server/src/server.ts"
