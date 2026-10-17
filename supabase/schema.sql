@@ -488,10 +488,12 @@ DROP POLICY IF EXISTS "Permitir insercao de perfil no cadastro" ON public.profil
 DROP POLICY IF EXISTS "Cadastro de perfil seguro" ON public.profiles;
 
 -- TRIGGER DE PROTEÇÃO DE COLUNAS CRÍTICAS (ativo e role)
+-- Permite edição direta pelo painel do Supabase (SQL Editor / Table Editor, onde auth.uid() é NULL)
+-- ou via service_role, bloqueando apenas usuários comuns autenticados via cliente (PostgREST).
 CREATE OR REPLACE FUNCTION public.protect_profile_roles()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NOT public.is_admin() THEN
+  IF auth.uid() IS NOT NULL AND COALESCE(auth.role(), '') != 'service_role' AND NOT public.is_admin() THEN
     -- Morador comum não pode alterar o próprio 'ativo' (auto-aprovação)
     IF NEW.ativo IS DISTINCT FROM OLD.ativo THEN
       RAISE EXCEPTION 'Apenas administradores podem aprovar ou alterar o status ativo de um morador.';
