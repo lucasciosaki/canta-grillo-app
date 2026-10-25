@@ -1,11 +1,13 @@
 import React from 'react';
-import { Bell, LogOut } from 'lucide-react';
+import { Bell, LogOut, RefreshCw } from 'lucide-react';
 
 interface HeaderProps {
   title?: string;
   subtitle?: string;
   unreadNotifications?: number;
   onNotificationsClick?: () => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
   onSignOut?: () => void;
 }
 
@@ -14,6 +16,8 @@ export const Header: React.FC<HeaderProps> = ({
   subtitle = 'Desde 2004',
   unreadNotifications = 0,
   onNotificationsClick,
+  onRefresh,
+  isRefreshing = false,
   onSignOut,
 }) => (
   <header className="sticky top-0 z-40 bg-paper border-b border-line px-5 py-3 flex items-center justify-between">
@@ -30,11 +34,24 @@ export const Header: React.FC<HeaderProps> = ({
     </div>
 
     <div className="flex items-center gap-1.5">
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={isRefreshing}
+          aria-label="Atualizar dados"
+          title="Forçar sincronização com o banco"
+          className="p-1.5 text-muted hover:text-forest transition-colors rounded-lg cursor-pointer disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-forest' : ''}`} strokeWidth={1.8} />
+        </button>
+      )}
+
       <button
         type="button"
         onClick={onNotificationsClick}
         aria-label="Notificações"
-        className="relative p-1.5 text-ink hover:text-forest transition-colors rounded-lg"
+        className="relative p-1.5 text-ink hover:text-forest transition-colors rounded-lg cursor-pointer"
       >
         <Bell className="w-5 h-5" strokeWidth={1.8} />
         {unreadNotifications > 0 && (
@@ -50,7 +67,7 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={onSignOut}
           aria-label="Sair da conta"
           title="Sair da conta"
-          className="p-1.5 text-muted hover:text-clay transition-colors"
+          className="p-1.5 text-muted hover:text-clay transition-colors cursor-pointer"
         >
           <LogOut className="w-4 h-4" strokeWidth={1.8} />
         </button>

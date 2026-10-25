@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
+import { getProfilesCached } from '../../utils/sessionDataCache';
 import { PageTitle, Button, Tag } from '../../components/ui';
 import {
   Beer,
@@ -56,13 +57,18 @@ export const CervejasScreen: React.FC<CervejasScreenProps> = ({ onBack }) => {
   const [salvandoLancamento, setSalvandoLancamento] = useState(false);
   const [erroLancamento, setErroLancamento] = useState<string | null>(null);
 
-  // Carregamento de dados (Moradores e Caixas)
+  const cervejasDebounceRef = useRef<any>(null);
+
+  // Carregamento de dados (Moradores e Caixas) em paralelo
   const carregarDados = useCallback(async () => {
     try {
-      // 1. Carrega todos os perfis para auditoria e mapeamento de apelidos
-      const { data: allProfilesData } = await supabase
-        .from('profiles')
-        .select('id, nome, apelido, geracao, role, ativo, quarto:rooms(nome)');
+      const [allProfilesData, caixasRes] = await Promise.all([
+        getProfilesCached('id, nome, apelido, geracao, role, ativo, quarto:rooms(nome)'),
+        supabase
+          .from('caixas_cerveja')
+          .select('*')
+          .order('created_at', { ascending: false }),
+      ]);
 
       const perfisMap = new Map<string, MoradorResumoCerveja>();
       (allProfilesData || []).forEach((p: any) => {
@@ -76,8 +82,7 @@ export const CervejasScreen: React.FC<CervejasScreenProps> = ({ onBack }) => {
         });
       });
 
-      // 2. Filtra estritamente moradores da república (role !== 'externo' e ativo = true)
-      // Exclui agregados / convidados externos
+      // Filtra estritamente moradores da república (role !== 'externo' e ativo = true)
       const moradoresAtivosList: MoradorResumoCerveja[] = (allProfilesData || [])
         .filter((p: any) => p.ativo === true && p.role !== 'externo')
         .map((p: any) => ({
@@ -95,24 +100,17 @@ export const CervejasScreen: React.FC<CervejasScreenProps> = ({ onBack }) => {
         });
       setMoradoresAtivos(moradoresAtivosList);
 
-      // 3. Carrega todas as caixas de cerveja
-      const { data: caixasData, error: caixasError } = await supabase
-        .from('caixas_cerveja')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (caixasError) {
-        console.error('[CervejasScreen] Erro ao carregar caixas:', caixasError);
+      if (caixasRes.error) {
+        console.error('[CervejasScreen] Erro ao carregar caixas:', caixasRes.error);
         return;
       }
 
-      const caixasFormatadas: CaixaCerveja[] = (caixasData || [])
+      const caixasFormatadas: CaixaCerveja[] = (caixasRes.data || [])
         .map((c: any) => ({
           ...c,
           morador: perfisMap.get(c.morador_id) || null,
           admin_baixa: c.baixada_por ? perfisMap.get(c.baixada_por) || null : null,
         }))
-        // Garante que eventuais caixas associadas a agregados não apareçam
         .filter((c: CaixaCerveja) => c.morador?.role !== 'externo');
 
       setCaixas(caixasFormatadas);
@@ -127,18 +125,26 @@ export const CervejasScreen: React.FC<CervejasScreenProps> = ({ onBack }) => {
     carregarDados();
   }, [carregarDados]);
 
-  // Realtime subscription
+  // Realtime subscription com debounce de 800ms
   useEffect(() => {
+    const triggerDebounced = () => {
+      if (cervejasDebounceRef.current) clearTimeout(cervejasDebounceRef.current);
+      cervejasDebounceRef.current = setTimeout(() => {
+        carregarDados();
+      }, 800);
+    };
+
     const channel = supabase
       .channel('caixas-cerveja-realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'caixas_cerveja' },
-        () => carregarDados()
+        triggerDebounced
       )
       .subscribe();
 
     return () => {
+      if (cervejasDebounceRef.current) clearTimeout(cervejasDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarDados]);

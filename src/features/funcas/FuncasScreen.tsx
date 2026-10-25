@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
 import { PageTitle, Tag, Button } from '../../components/ui';
 import type { Front, FrontMember } from '../../types/frentes';
 import type { Profile } from '../../types/auth';
+import { getProfilesCached, getFrontsCached } from '../../utils/sessionDataCache';
 import {
   obterApelidoMorador,
   verificarPermissaoAtribuicao,
@@ -91,48 +92,41 @@ export const FuncasScreen: React.FC<FuncasScreenProps> = ({
   // Histórico de concluídas na aba "Minhas"
   const [verConcluidasMinhas, setVerConcluidasMinhas] = useState(false);
 
+  const funcasDebounceRef = useRef<any>(null);
+
   const carregarDados = useCallback(async () => {
     try {
-      // 1. Busca todas as frentes
-      const { data: frentesData } = await supabase.from('fronts').select('*').order('nome');
+      // Busca todas as frentes, membros, perfis, funças e atribuições em paralelo
+      const [frentesData, membrosData, profilesData, funcasRes, atribData] = await Promise.all([
+        getFrontsCached<Front>(),
+        supabase.from('front_members').select('*').then(({ data }) => data || []),
+        getProfilesCached<Profile>('*'),
+        supabase
+          .from('funcas')
+          .select('*, frente:fronts(id, nome, slug)')
+          .order('created_at', { ascending: false }),
+        supabase.from('funca_atribuicoes').select('*').then(({ data }) => data || []),
+      ]);
+
       if (frentesData) setFrentes(frentesData as Front[]);
-
-      // 2. Busca alocações de membros de frentes
-      const { data: membrosData } = await supabase.from('front_members').select('*');
       if (membrosData) setMembrosFrentes(membrosData as FrontMember[]);
-
-      // 3. Busca perfis para mapeamento completo de relatores e atribuições
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('nome');
 
       const profilesMap: Record<string, Profile> = {};
       if (profilesData) {
-        profilesData.forEach((p) => {
-          profilesMap[p.id] = p as Profile;
+        (profilesData as Profile[]).forEach((p) => {
+          profilesMap[p.id] = p;
         });
 
-        // Apenas moradores e administradores ATIVOS da república podem receber atribuições ou trocas
         const apenasMoradoresAtivos = (profilesData as Profile[]).filter(
           (p) => (p.role === 'morador' || p.role === 'admin') && p.ativo
         );
         setTodosMoradores(apenasMoradoresAtivos);
       }
 
-      // 4. Busca funças
-      const { data: funcasData, error: funcasError } = await supabase
-        .from('funcas')
-        .select('*, frente:fronts(id, nome, slug)')
-        .order('created_at', { ascending: false });
-
-      if (funcasError || !funcasData) return;
-
-      // 5. Busca atribuições de funças
-      const { data: atribData } = await supabase.from('funca_atribuicoes').select('*');
+      if (funcasRes.error || !funcasRes.data) return;
 
       const atribMap: Record<string, FuncaAtribuicao[]> = {};
-      atribData?.forEach((a) => {
+      (atribData as any[])?.forEach((a) => {
         if (!atribMap[a.funca_id]) atribMap[a.funca_id] = [];
         atribMap[a.funca_id].push({
           ...a,
@@ -142,7 +136,7 @@ export const FuncasScreen: React.FC<FuncasScreenProps> = ({
         });
       });
 
-      const formatadas: Funca[] = funcasData.map((f) => ({
+      const formatadas: Funca[] = (funcasRes.data as any[]).map((f) => ({
         ...f,
         relator: profilesMap[f.relator_id] || null,
         atribuicoes: atribMap[f.id] || [],
@@ -160,19 +154,23 @@ export const FuncasScreen: React.FC<FuncasScreenProps> = ({
     carregarDados();
   }, [carregarDados]);
 
-  // Realtime para funcas e funca_atribuicoes
+  // Realtime para funcas e funca_atribuicoes com debounce de 800ms
   useEffect(() => {
+    const triggerDebounced = () => {
+      if (funcasDebounceRef.current) clearTimeout(funcasDebounceRef.current);
+      funcasDebounceRef.current = setTimeout(() => {
+        carregarDados();
+      }, 800);
+    };
+
     const channel = supabase
       .channel('funcas-realtime-channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () => {
-        carregarDados();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, () => {
-        carregarDados();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, triggerDebounced)
       .subscribe();
 
     return () => {
+      if (funcasDebounceRef.current) clearTimeout(funcasDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarDados]);

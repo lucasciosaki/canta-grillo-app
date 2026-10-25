@@ -129,6 +129,8 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   });
   const [regrasExpandidas, setRegrasExpandidas] = useState(false);
   const [salvandoRegras, setSalvandoRegras] = useState(false);
+  const hasEnsuredQuadroRef = useRef(false);
+  const faxinaDebounceRef = useRef<any>(null);
 
   // Carrega Quartos e Funções para configuração da escala
   const carregarDadosIniciais = useCallback(async () => {
@@ -214,15 +216,18 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         day: '2-digit',
       }).format(agora);
 
-      // 1. Invoca a RPC nativa para garantir a escala da semana e tarefas do dia
-      try {
-        await supabase.rpc('garantir_quadro_faxina_atual', {
-          p_semana_ano: semana_ano,
-          p_ano: ano,
-          p_data: hojeStr,
-        });
-      } catch (rpcErr) {
-        console.warn('[QuadroPontosScreen] Aviso ao chamar garantir_quadro_faxina_atual:', rpcErr);
+      // 1. Invoca a RPC nativa para garantir a escala da semana e tarefas do dia apenas na carga inicial
+      if (!hasEnsuredQuadroRef.current) {
+        hasEnsuredQuadroRef.current = true;
+        try {
+          await supabase.rpc('garantir_quadro_faxina_atual', {
+            p_semana_ano: semana_ano,
+            p_ano: ano,
+            p_data: hojeStr,
+          });
+        } catch (rpcErr) {
+          console.warn('[QuadroPontosScreen] Aviso ao chamar garantir_quadro_faxina_atual:', rpcErr);
+        }
       }
 
       // 2. Consulta itens da escala da semana atual
@@ -334,27 +339,35 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   useEffect(() => {
     carregarQuadro();
 
-    // Sincronização em tempo real via Supabase Realtime
+    const triggerDebounced = () => {
+      if (faxinaDebounceRef.current) clearTimeout(faxinaDebounceRef.current);
+      faxinaDebounceRef.current = setTimeout(() => {
+        carregarQuadro();
+      }, 800);
+    };
+
+    // Sincronização em tempo real via Supabase Realtime com debounce
     const channel = supabase
       .channel('realtime_faxina_quadro')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'registro_diario_faxina' },
-        () => carregarQuadro()
+        triggerDebounced
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'escala_semanal_faxina' },
-        () => carregarQuadro()
+        triggerDebounced
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'regras_quadro_pontos' },
-        () => carregarQuadro()
+        triggerDebounced
       )
       .subscribe();
 
     return () => {
+      if (faxinaDebounceRef.current) clearTimeout(faxinaDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarQuadro]);

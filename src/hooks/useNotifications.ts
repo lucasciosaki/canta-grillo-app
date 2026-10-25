@@ -15,6 +15,32 @@ import {
   prunePushedEvents,
   subscribeToWebPush,
 } from '../utils/browserPush';
+import {
+  getProfilesCached,
+  getFrontsCached,
+  getAreasComunsCached,
+  invalidateCache,
+} from '../utils/sessionDataCache';
+
+interface RawTablesCache {
+  perfis: any[];
+  pontos: any[];
+  vis: Set<string>;
+  msgPontos: any[];
+  fronts: any[];
+  meusMembros: any[];
+  areas: any[];
+  escalasSemana: any[];
+  tarefasHoje: any[];
+  funcas: any[];
+  dogs: any[];
+  meal: any;
+  caixas: any[];
+  adminPerfisCount: number;
+  adminBaixasCount: number;
+  msgFrentes: any[];
+  mercado: any[];
+}
 
 const STORAGE_KEY_READ = 'canta_grillo_read_notifications_v1';
 
@@ -40,6 +66,12 @@ export function useNotifications() {
 
   // Cache em memória do último contexto carregado para evitar requisições de rede no timer de 60s
   const lastEvaluationContextRef = useRef<NotificationEvaluationContext | null>(null);
+
+  // Cache modular de dados brutos por tabela
+  const rawTablesRef = useRef<RawTablesCache | null>(null);
+
+  // Conjunto de tabelas pendentes de atualização granular
+  const changedTablesRef = useRef<Set<string>>(new Set());
 
   // Timer de debounce para eventos do Realtime
   const debounceTimerRef = useRef<any>(null);
@@ -105,8 +137,8 @@ export function useNotifications() {
     setNotifications([]);
   }, []);
 
-  // Busca dados em paralelo (Promise.all) com colunas leves (zero Base64)
-  const carregarNotificacoes = useCallback(async () => {
+  // Busca dados com suporte a recarregamento granular por tabela ou carga completa
+  const carregarNotificacoes = useCallback(async (isForce = false, tablesToRefresh?: Set<string>) => {
     if (!user?.id) return;
     setIsLoading(true);
 
@@ -115,131 +147,239 @@ export function useNotifications() {
       const { dateStr } = getBrasiliaDateParts(agora);
       const isAdmin = profile?.role === 'admin';
 
-      // Dispara 1ª onda de consultas independentes em paralelo com colunas restritas e leves
-      const [
-        perfisRes,
-        pontosRes,
-        visRes,
-        msgPontosRes,
-        frontsRes,
-        meusMembrosRes,
-        areasRes,
-        escalasSemanaRes,
-        tarefasHojeRes,
-        funcasRes,
-        dogsRes,
-        mealRes,
-        caixasRes,
-        adminPerfisRes,
-        adminBaixasRes,
-      ] = await Promise.all([
-        // 1. Perfis (sem avatar_url pesado)
-        supabase
-          .from('profiles')
-          .select('id, nome, apelido, role, ativo, quarto_id'),
+      let currentRaw: RawTablesCache;
+      const isGranular = !isForce && Boolean(tablesToRefresh && tablesToRefresh.size > 0 && rawTablesRef.current);
 
-        // 2. Pontos de Bagunça abertos (SEM foto_url Base64!)
-        supabase
-          .from('pontos_bagunca')
-          .select('id, relator_id, culpado_id, local_descricao, status, created_at')
-          .order('created_at', { ascending: false }),
+      if (isGranular) {
+        currentRaw = { ...rawTablesRef.current! };
+        const refreshTasks: Promise<void>[] = [];
 
-        // 3. Visualizações do morador
-        supabase
-          .from('pontos_bagunca_visualizacoes')
-          .select('ponto_id')
-          .eq('morador_id', user.id),
-
-        // 4. Mensagens recentes em pontos de bagunça
-        supabase
-          .from('mensagens_ponto_bagunca')
-          .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
-          .order('enviada_em', { ascending: false })
-          .limit(20),
-
-        // 5. Frentes
-        supabase
-          .from('fronts')
-          .select('id, nome, slug'),
-
-        // 6. Minhas Frentes
-        supabase
-          .from('front_members')
-          .select('front_id, is_lider, data_inicio')
-          .eq('profile_id', user.id),
-
-        // 7. Áreas comuns
-        supabase
-          .from('areas_comuns')
-          .select('id, nome'),
-
-        // 8. Escala semanal de faxina
-        supabase
-          .from('escala_semanal_faxina')
-          .select('id, quarto_id, area_comum_id, semana_ano, pontos_faltas'),
-
-        // 9. Tarefa do dia de faxina (SEM fotos_comprovacao nem fiscal_foto_url!)
-        supabase
-          .from('registro_diario_faxina')
-          .select('id, quarto_id, area_comum_id, data, status, fiscal_status')
-          .eq('data', dateStr),
-
-        // 10. Funças e atribuições (SEM foto_url!)
-        supabase
-          .from('funcas')
-          .select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)'),
-
-        // 11. Refeições dos Dogs hoje
-        supabase
-          .from('dogs_refeicoes_diarias')
-          .select('turno')
-          .eq('data', dateStr),
-
-        // 12. Misturas do morador hoje
-        supabase
-          .from('daily_meals')
-          .select('misturas_consumidas')
-          .eq('usuario_id', user.id)
-          .eq('data', dateStr)
-          .maybeSingle(),
-
-        // 13. Caixas de cerveja do morador
-        supabase
-          .from('caixas_cerveja')
-          .select('id, motivo_descricao, status')
-          .eq('morador_id', user.id),
-
-        // 14. Admin: contagem de perfis pendentes
-        isAdmin
-          ? supabase
-              .from('profiles')
-              .select('id', { count: 'exact', head: true })
-              .eq('ativo', false)
-          : Promise.resolve({ count: 0 }),
-
-        // 15. Admin: contagem de baixas de cerveja pendentes
-        isAdmin
-          ? supabase
+        if (tablesToRefresh!.has('profiles')) {
+          refreshTasks.push((async () => {
+            currentRaw.perfis = await getProfilesCached();
+          })());
+        }
+        if (tablesToRefresh!.has('pontos_bagunca')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('pontos_bagunca')
+              .select('id, relator_id, culpado_id, local_descricao, status, created_at')
+              .order('created_at', { ascending: false });
+            if (data) currentRaw.pontos = data;
+          })());
+        }
+        if (tablesToRefresh!.has('pontos_bagunca_visualizacoes')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('pontos_bagunca_visualizacoes')
+              .select('ponto_id')
+              .eq('morador_id', user.id);
+            if (data) currentRaw.vis = new Set(data.map((v: any) => v.ponto_id));
+          })());
+        }
+        if (tablesToRefresh!.has('mensagens_ponto_bagunca')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('mensagens_ponto_bagunca')
+              .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
+              .order('enviada_em', { ascending: false })
+              .limit(20);
+            if (data) currentRaw.msgPontos = data;
+          })());
+        }
+        if (tablesToRefresh!.has('fronts')) {
+          refreshTasks.push((async () => {
+            currentRaw.fronts = await getFrontsCached();
+          })());
+        }
+        if (tablesToRefresh!.has('front_members')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('front_members')
+              .select('front_id, is_lider, data_inicio')
+              .eq('profile_id', user.id);
+            if (data) currentRaw.meusMembros = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('areas_comuns')) {
+          refreshTasks.push((async () => {
+            currentRaw.areas = await getAreasComunsCached();
+          })());
+        }
+        if (tablesToRefresh!.has('escala_semanal_faxina')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('escala_semanal_faxina')
+              .select('quarto_id, area_comum_id, semana_ano, ano, pontos_faltas');
+            if (data) currentRaw.escalasSemana = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('registro_diario_faxina')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('registro_diario_faxina')
+              .select('id, quarto_id, area_comum_id, data, status, fiscal_status')
+              .eq('data', dateStr);
+            if (data) currentRaw.tarefasHoje = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('funcas')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('funcas')
+              .select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)');
+            if (data) currentRaw.funcas = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('dogs_refeicoes_diarias')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('dogs_refeicoes_diarias')
+              .select('turno')
+              .eq('data', dateStr);
+            if (data) currentRaw.dogs = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('daily_meals')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('daily_meals')
+              .select('misturas_consumidas')
+              .eq('usuario_id', user.id)
+              .eq('data', dateStr)
+              .maybeSingle();
+            currentRaw.meal = data;
+          })());
+        }
+        if (tablesToRefresh!.has('caixas_cerveja')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
               .from('caixas_cerveja')
-              .select('id', { count: 'exact', head: true })
-              .eq('status', 'baixa_solicitada')
-          : Promise.resolve({ count: 0 }),
-      ]);
+              .select('id, motivo_descricao, status')
+              .eq('morador_id', user.id);
+            if (data) currentRaw.caixas = data || [];
+          })());
+          if (isAdmin) {
+            refreshTasks.push((async () => {
+              const { count } = await supabase
+                .from('caixas_cerveja')
+                .select('id', { count: 'exact', head: true })
+                .eq('status', 'baixa_solicitada');
+              currentRaw.adminBaixasCount = count || 0;
+            })());
+          }
+        }
+        if (tablesToRefresh!.has('solicitacoes_mercado')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('solicitacoes_mercado')
+              .select('item_id, solicitado_por, status, item:market_catalog(nome)')
+              .eq('status', 'solicitado')
+              .limit(10);
+            if (data) currentRaw.mercado = data || [];
+          })());
+        }
+        if (tablesToRefresh!.has('mensagens_frente')) {
+          const userFrontIds = Array.from(new Set<string>((currentRaw.meusMembros || []).map((m: any) => m.front_id)));
+          if (userFrontIds.length > 0) {
+            refreshTasks.push((async () => {
+              const { data } = await supabase
+                .from('mensagens_frente')
+                .select('id, frente_id, autor_id, conteudo, enviada_em')
+                .in('frente_id', userFrontIds)
+                .order('enviada_em', { ascending: false })
+                .limit(20);
+              if (data) currentRaw.msgFrentes = data || [];
+            })());
+          }
+        }
+
+        await Promise.all(refreshTasks);
+      } else {
+        // Carga completa inicial ou forceRefresh
+        const [
+          perfisData,
+          pontosRes,
+          visRes,
+          msgPontosRes,
+          frontsData,
+          meusMembrosRes,
+          areasData,
+          escalasSemanaRes,
+          tarefasHojeRes,
+          funcasRes,
+          dogsRes,
+          mealRes,
+          caixasRes,
+          adminPerfisRes,
+          adminBaixasRes,
+        ] = await Promise.all([
+          getProfilesCached(),
+          supabase.from('pontos_bagunca').select('id, relator_id, culpado_id, local_descricao, status, created_at').order('created_at', { ascending: false }),
+          supabase.from('pontos_bagunca_visualizacoes').select('ponto_id').eq('morador_id', user.id),
+          supabase.from('mensagens_ponto_bagunca').select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em').order('enviada_em', { ascending: false }).limit(20),
+          getFrontsCached(),
+          supabase.from('front_members').select('front_id, is_lider, data_inicio').eq('profile_id', user.id),
+          getAreasComunsCached(),
+          supabase.from('escala_semanal_faxina').select('quarto_id, area_comum_id, semana_ano, ano, pontos_faltas'),
+          supabase.from('registro_diario_faxina').select('id, quarto_id, area_comum_id, data, status, fiscal_status').eq('data', dateStr),
+          supabase.from('funcas').select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)'),
+          supabase.from('dogs_refeicoes_diarias').select('turno').eq('data', dateStr),
+          supabase.from('daily_meals').select('misturas_consumidas').eq('usuario_id', user.id).eq('data', dateStr).maybeSingle(),
+          supabase.from('caixas_cerveja').select('id, motivo_descricao, status').eq('morador_id', user.id),
+          isAdmin ? supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('ativo', false) : Promise.resolve({ count: 0 }),
+          isAdmin ? supabase.from('caixas_cerveja').select('id', { count: 'exact', head: true }).eq('status', 'baixa_solicitada') : Promise.resolve({ count: 0 }),
+        ]);
+
+        const userFrontIds = Array.from(new Set<string>((meusMembrosRes.data || []).map((m: any) => m.front_id)));
+        const isMercadoMember = userFrontIds.some((fId) => (frontsData || []).find((f: any) => f.id === fId)?.slug === 'mercado');
+
+        const [msgFrentesRes, mercadoRes] = await Promise.all([
+          userFrontIds.length > 0
+            ? supabase.from('mensagens_frente').select('id, frente_id, autor_id, conteudo, enviada_em').in('frente_id', userFrontIds).order('enviada_em', { ascending: false }).limit(20)
+            : Promise.resolve({ data: [] }),
+          isMercadoMember
+            ? supabase.from('solicitacoes_mercado').select('item_id, solicitado_por, status, item:market_catalog(nome)').eq('status', 'solicitado').limit(10)
+            : Promise.resolve({ data: [] }),
+        ]);
+
+        currentRaw = {
+          perfis: perfisData || [],
+          pontos: pontosRes.data || [],
+          vis: new Set((visRes.data || []).map((v: any) => v.ponto_id)),
+          msgPontos: msgPontosRes.data || [],
+          fronts: frontsData || [],
+          meusMembros: meusMembrosRes.data || [],
+          areas: areasData || [],
+          escalasSemana: escalasSemanaRes.data || [],
+          tarefasHoje: tarefasHojeRes.data || [],
+          funcas: funcasRes.data || [],
+          dogs: dogsRes.data || [],
+          meal: mealRes.data,
+          caixas: caixasRes.data || [],
+          adminPerfisCount: adminPerfisRes.count || 0,
+          adminBaixasCount: adminBaixasRes.count || 0,
+          msgFrentes: msgFrentesRes.data || [],
+          mercado: mercadoRes.data || [],
+        };
+      }
+
+      rawTablesRef.current = currentRaw;
 
       // Mapeamento dos perfis
       const perfisMap: Record<string, any> = {};
-      perfisRes.data?.forEach((p) => {
+      currentRaw.perfis.forEach((p) => {
         perfisMap[p.id] = p;
       });
 
       // Mapeamento das frentes
       const frontsMap: Record<string, { id: string; nome: string; slug: string }> = {};
-      frontsRes.data?.forEach((f) => {
+      currentRaw.fronts.forEach((f) => {
         frontsMap[f.id] = f;
       });
 
-      const userFrontIds = new Set<string>((meusMembrosRes.data || []).map((m) => m.front_id));
-      const alocacoesFrente = (meusMembrosRes.data || []).map((m) => ({
+      const userFrontIds = new Set<string>((currentRaw.meusMembros || []).map((m) => m.front_id));
+      const alocacoesFrente = (currentRaw.meusMembros || []).map((m) => ({
         front_id: m.front_id,
         frente_nome: frontsMap[m.front_id]?.nome || 'Frente',
         is_lider: Boolean(m.is_lider),
@@ -247,11 +387,11 @@ export function useNotifications() {
       }));
 
       // Pontos de bagunça abertos e mensagens
-      const pontosRaw = pontosRes.data || [];
-      const visualizacoesIds = new Set<string>((visRes.data || []).map((v) => v.ponto_id));
+      const pontosRaw = currentRaw.pontos;
+      const visualizacoesIds = currentRaw.vis;
       const pontosAbertosIds = new Set(pontosRaw.filter((p) => p.status === 'aberta').map((p) => p.id));
 
-      const pontosMensagens = (msgPontosRes.data || [])
+      const pontosMensagens = (currentRaw.msgPontos || [])
         .filter((m) => pontosAbertosIds.has(m.ponto_bagunca_id) && m.autor_id !== user.id)
         .map((m) => {
           const ponto = pontosRaw.find((p) => p.id === m.ponto_bagunca_id);
@@ -278,60 +418,31 @@ export function useNotifications() {
         totalPontosMes: pontosDoMorador.length,
       }));
 
-      // Mensagens de frente (2ª onda rápida se houver frentes)
-      let mensagensFrente: any[] = [];
-      let solicitacoesMercado: any[] = [];
-
-      const isMercadoMember = Array.from(userFrontIds).some(
-        (fId) => frontsMap[fId]?.slug === 'mercado'
-      );
-
-      const [msgFrentesRes, mercadoRes] = await Promise.all([
-        userFrontIds.size > 0
-          ? supabase
-              .from('mensagens_frente')
-              .select('id, frente_id, autor_id, conteudo, enviada_em')
-              .in('frente_id', Array.from(userFrontIds))
-              .order('enviada_em', { ascending: false })
-              .limit(20)
-          : Promise.resolve({ data: [] }),
-        isMercadoMember
-          ? supabase
-              .from('solicitacoes_mercado')
-              .select('item_id, solicitado_por, status, item:market_catalog(nome)')
-              .eq('status', 'solicitado')
-              .limit(10)
-          : Promise.resolve({ data: [] }),
-      ]);
-
-      if (msgFrentesRes.data) {
-        mensagensFrente = (msgFrentesRes.data || [])
-          .filter((m: any) => m.autor_id !== user.id)
-          .map((m: any) => {
-            const autor = perfisMap[m.autor_id];
-            return {
-              id: m.id,
-              frente_id: m.frente_id,
-              autor_id: m.autor_id,
-              conteudo: m.conteudo,
-              enviada_em: m.enviada_em,
-              autor_apelido: autor?.apelido || autor?.nome?.split(' ')[0] || 'Morador',
-              frente_nome: frontsMap[m.frente_id]?.nome || 'Frente',
-            };
-          });
-      }
-
-      if (mercadoRes.data) {
-        solicitacoesMercado = (mercadoRes.data || []).map((s: any) => {
-          const solicitante = perfisMap[s.solicitado_por];
+      // Mensagens de frente
+      const mensagensFrente = (currentRaw.msgFrentes || [])
+        .filter((m: any) => m.autor_id !== user.id)
+        .map((m: any) => {
+          const autor = perfisMap[m.autor_id];
           return {
-            id: `${s.item_id}-${s.solicitado_por}`,
-            item_nome: s.item?.nome || 'Item',
-            solicitante_apelido: solicitante?.apelido || solicitante?.nome?.split(' ')[0] || 'Morador',
-            solicitado_por: s.solicitado_por,
+            id: m.id,
+            frente_id: m.frente_id,
+            autor_id: m.autor_id,
+            conteudo: m.conteudo,
+            enviada_em: m.enviada_em,
+            autor_apelido: autor?.apelido || autor?.nome?.split(' ')[0] || 'Morador',
+            frente_nome: frontsMap[m.frente_id]?.nome || 'Frente',
           };
         });
-      }
+
+      const solicitacoesMercado = (currentRaw.mercado || []).map((s: any) => {
+        const solicitante = perfisMap[s.solicitado_por];
+        return {
+          id: `${s.item_id}-${s.solicitado_por}`,
+          item_nome: s.item?.nome || 'Item',
+          solicitante_apelido: solicitante?.apelido || solicitante?.nome?.split(' ')[0] || 'Morador',
+          solicitado_por: s.solicitado_por,
+        };
+      });
 
       // 5. Quadro de Faxina
       let escalasQuarto: any = null;
@@ -340,9 +451,9 @@ export function useNotifications() {
       const novasFotosFiscalHoje: any[] = [];
       const pontosFaltaRecebidos: any[] = [];
 
-      const areasRaw = areasRes.data || [];
+      const areasRaw = currentRaw.areas;
       const hallsArea = areasRaw.find((a) => a.nome.toLowerCase().includes('halls'));
-      const escalasSemanaRaw = escalasSemanaRes.data || [];
+      const escalasSemanaRaw = currentRaw.escalasSemana;
 
       if (hallsArea && escalasSemanaRaw.length > 0) {
         const itemHalls = escalasSemanaRaw.find((e) => e.area_comum_id === hallsArea.id);
@@ -353,7 +464,7 @@ export function useNotifications() {
         const minhaEscala = escalasSemanaRaw.find((e) => e.quarto_id === profile.quarto_id);
         if (minhaEscala) {
           const areaNome = areasRaw.find((a) => a.id === minhaEscala.area_comum_id)?.nome;
-          const tarefaHoje = (tarefasHojeRes.data || []).find((t) => t.quarto_id === profile.quarto_id);
+          const tarefaHoje = (currentRaw.tarefasHoje || []).find((t) => t.quarto_id === profile.quarto_id);
 
           escalasQuarto = {
             semana_ano: minhaEscala.semana_ano,
@@ -376,7 +487,7 @@ export function useNotifications() {
       // Se for fiscal (Halls): verifica fotos pendentes de hoje
       const isFiscal = Boolean(profile?.quarto_id && quartoFiscalId === profile.quarto_id);
       if (isFiscal) {
-        (tarefasHojeRes.data || []).forEach((r) => {
+        (currentRaw.tarefasHoje || []).forEach((r) => {
           if (r.status === 'cumprido' && r.fiscal_status === 'pendente') {
             novasFotosFiscalHoje.push({
               id: r.id,
@@ -392,7 +503,7 @@ export function useNotifications() {
       const novasFuncasNaMinhaFrente: any[] = [];
       const pedidosTrocaRecebidos: any[] = [];
 
-      (funcasRes.data || []).forEach((f: any) => {
+      (currentRaw.funcas || []).forEach((f: any) => {
         const minhaAtribuicao = f.atribuicoes?.find((a: any) => a.morador_id === user.id);
         if (minhaAtribuicao && f.status !== 'concluida') {
           minhasFuncasAtribuidas.push({
@@ -427,19 +538,19 @@ export function useNotifications() {
       // 7. Dogs
       let dogsRefeicaoManhaHojeFeita = false;
       let dogsRefeicaoNoiteHojeFeita = false;
-      (dogsRes.data || []).forEach((d) => {
+      (currentRaw.dogs || []).forEach((d) => {
         if (d.turno === 'manha') dogsRefeicaoManhaHojeFeita = true;
         if (d.turno === 'noite') dogsRefeicaoNoiteHojeFeita = true;
       });
 
       // 8. Misturas
       let minhasMisturasHoje: number | null = null;
-      if (mealRes.data) {
-        minhasMisturasHoje = Number(mealRes.data.misturas_consumidas);
+      if (currentRaw.meal) {
+        minhasMisturasHoje = Number(currentRaw.meal.misturas_consumidas);
       }
 
       // 9. Caixas de Cerveja
-      const minhasCaixasAtribuidas = (caixasRes.data || []).map((c) => ({
+      const minhasCaixasAtribuidas = (currentRaw.caixas || []).map((c) => ({
         id: c.id,
         motivo_descricao: c.motivo_descricao,
         status: c.status,
@@ -485,8 +596,8 @@ export function useNotifications() {
         dogsRefeicaoNoiteHojeFeita,
         minhasMisturasHoje,
         minhasCaixasAtribuidas,
-        perfisAguardandoAprovacaoCount: adminPerfisRes.count || 0,
-        solicitacoesBaixaCervejaAdminCount: adminBaixasRes.count || 0,
+        perfisAguardandoAprovacaoCount: currentRaw.adminPerfisCount,
+        solicitacoesBaixaCervejaAdminCount: currentRaw.adminBaixasCount,
       };
 
       // Salva no ref em memória para uso no timer de 60s (zero rede!)
@@ -544,27 +655,89 @@ export function useNotifications() {
     return () => clearInterval(timer);
   }, []);
 
-  // Debounced refresh para eventos Realtime (evita tempestade de requisições)
-  const debouncedRefresh = useCallback(() => {
+  // Atualização granular com debounce para eventos Realtime (evita tempestade de requisições)
+  const triggerGranularRefresh = useCallback((tableName: string) => {
+    changedTablesRef.current.add(tableName);
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     debounceTimerRef.current = setTimeout(() => {
-      carregarNotificacoes();
-    }, 1500);
+      const toRefresh = new Set(changedTablesRef.current);
+      changedTablesRef.current.clear();
+      carregarNotificacoes(false, toRefresh);
+    }, 1000);
   }, [carregarNotificacoes]);
 
-  // Escuta unificada via Supabase Realtime com debounce
+  // Força uma sincronização limpa completa (invalida cache e busca tudo no banco)
+  const forceRefresh = useCallback(async () => {
+    invalidateCache();
+    await carregarNotificacoes(true);
+  }, [carregarNotificacoes]);
+
+  // Atualização imediata em memória quando o usuário abre/visualiza um ponto (0 requisições extras)
+  const markPontoVisualizadoLocal = useCallback((pontoId: string) => {
+    if (rawTablesRef.current?.vis) {
+      rawTablesRef.current.vis.add(pontoId);
+    }
+    if (lastEvaluationContextRef.current) {
+      if (!lastEvaluationContextRef.current.visualizacoesIds) {
+        lastEvaluationContextRef.current.visualizacoesIds = new Set<string>();
+      }
+      lastEvaluationContextRef.current.visualizacoesIds.add(pontoId);
+      const atualizado = deriveNotifications({
+        ...lastEvaluationContextRef.current,
+        agora: new Date(),
+        readNotificationIds: readIdsRef.current,
+      });
+      setNotifications(atualizado);
+    }
+  }, []);
+
+  // Auto-refresh quando a página voltar do segundo plano ou reconectar
+  useEffect(() => {
+    let lastHiddenTime = 0;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenTime = Date.now();
+      } else if (document.visibilityState === 'visible') {
+        // Se ficou mais de 2 minutos em segundo plano, sincroniza tudo do banco
+        if (lastHiddenTime > 0 && Date.now() - lastHiddenTime > 120_000) {
+          forceRefresh();
+        }
+      }
+    };
+
+    const handleOnline = () => {
+      forceRefresh();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [forceRefresh]);
+
+  // Escuta unificada via Supabase Realtime com sincronização cirúrgica por tabela
   useEffect(() => {
     if (!user?.id) return;
 
     const channel = supabase
       .channel('realtime_notifications_hub')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'registro_diario_faxina' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, () =>
+        triggerGranularRefresh('pontos_bagunca')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () =>
+        triggerGranularRefresh('mensagens_ponto_bagunca')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, () =>
+        triggerGranularRefresh('escala_semanal_faxina')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'registro_diario_faxina' }, () =>
+        triggerGranularRefresh('registro_diario_faxina')
+      )
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_frente' }, (payload: any) => {
         if (payload?.eventType === 'INSERT' && payload.new?.autor_id !== user.id) {
           sendBrowserPush({
@@ -575,17 +748,36 @@ export function useNotifications() {
             url: '/?screen=frentes',
           });
         }
-        debouncedRefresh();
+        triggerGranularRefresh('mensagens_frente');
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'solicitacoes_mercado' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dogs_refeicoes_diarias' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_meals' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'caixas_cerveja' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, debouncedRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () =>
+        triggerGranularRefresh('front_members')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () =>
+        triggerGranularRefresh('funcas')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, () =>
+        triggerGranularRefresh('funcas')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'solicitacoes_mercado' }, () =>
+        triggerGranularRefresh('solicitacoes_mercado')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dogs_refeicoes_diarias' }, () =>
+        triggerGranularRefresh('dogs_refeicoes_diarias')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_meals' }, () =>
+        triggerGranularRefresh('daily_meals')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'caixas_cerveja' }, () =>
+        triggerGranularRefresh('caixas_cerveja')
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+        invalidateCache('profiles');
+        triggerGranularRefresh('profiles');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => {
+        forceRefresh();
+      })
       .subscribe();
 
     return () => {
@@ -594,7 +786,7 @@ export function useNotifications() {
       }
       supabase.removeChannel(channel);
     };
-  }, [user?.id, debouncedRefresh]);
+  }, [user?.id, triggerGranularRefresh, forceRefresh]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -608,5 +800,7 @@ export function useNotifications() {
     clearAll,
     requestPermission: handleRequestPermission,
     refresh: carregarNotificacoes,
+    forceRefresh,
+    markPontoVisualizadoLocal,
   };
 }

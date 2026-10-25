@@ -89,10 +89,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let isMounted = true;
 
+    const currentProfileUserIdRef = { current: null as string | null };
+
     // 1. Busca a sessão ativa ao iniciar
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!isMounted) return;
       if (session?.user) {
+        currentProfileUserIdRef.current = session.user.id;
         await fetchProfile(session.user.id, session.user);
         setSession(session);
         setUser(session.user);
@@ -107,14 +110,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 2. Escuta mudanças na autenticação (login, logout, refresh)
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!isMounted) return;
 
-      if (newSession?.user) {
-        await fetchProfile(newSession.user.id, newSession.user);
+      if (event === 'INITIAL_SESSION') {
+        // Já tratado pelo getSession acima
+        return;
+      }
+
+      if (event === 'TOKEN_REFRESHED' && newSession?.user) {
+        // Apenas atualiza a sessão sem refazer query pesada ao banco
         setSession(newSession);
         setUser(newSession.user);
+        return;
+      }
+
+      if (newSession?.user) {
+        const userIdChanged = currentProfileUserIdRef.current !== newSession.user.id;
+        currentProfileUserIdRef.current = newSession.user.id;
+        setSession(newSession);
+        setUser(newSession.user);
+        if (userIdChanged || event === 'SIGNED_IN') {
+          await fetchProfile(newSession.user.id, newSession.user);
+        }
       } else {
+        currentProfileUserIdRef.current = null;
         setSession(null);
         setUser(null);
         setProfile(null);

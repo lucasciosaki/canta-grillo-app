@@ -11,6 +11,8 @@ interface MobileShellProps {
   subtitle?: string;
   unreadNotifications?: number;
   onNotificationsClick?: () => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
   onSignOut?: () => void;
 }
 
@@ -22,6 +24,8 @@ export const MobileShell: React.FC<MobileShellProps> = ({
   subtitle,
   unreadNotifications = 0,
   onNotificationsClick,
+  onRefresh,
+  isRefreshing,
   onSignOut,
 }) => (
   <div className="min-h-dvh bg-paper text-ink">
@@ -32,6 +36,8 @@ export const MobileShell: React.FC<MobileShellProps> = ({
         subtitle={subtitle}
         unreadNotifications={unreadNotifications}
         onNotificationsClick={onNotificationsClick}
+        onRefresh={onRefresh}
+        isRefreshing={isRefreshing}
         onSignOut={onSignOut}
       />
       <main className="flex-1 px-5 py-4 pb-24">{children}</main>

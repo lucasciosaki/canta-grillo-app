@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
+import { getProfilesCached } from '../../utils/sessionDataCache';
 import { useAuth } from '../../contexts/AuthContext';
 import { PageTitle, Button, Tag } from '../../components/ui';
 import {
@@ -68,43 +69,41 @@ export const AtasScreen: React.FC<AtasScreenProps> = ({ onBack }) => {
     setTimeout(() => setFeedback(null), 3000);
   };
 
+  const atasDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Carrega atas e link do Drive do Supabase
   const carregarDados = useCallback(async () => {
     try {
       setLoading(true);
 
-      // 1. Carrega link do Drive
-      const { data: driveData, error: driveError } = await supabase
-        .from('house_settings')
-        .select('valor')
-        .eq('chave', 'drive_url')
-        .maybeSingle();
+      // Carrega link do Drive, perfis (em cache RAM) e atas de reunião em paralelo
+      const [driveRes, perfisRaw, atasRes] = await Promise.all([
+        supabase
+          .from('house_settings')
+          .select('valor')
+          .eq('chave', 'drive_url')
+          .maybeSingle(),
+        getProfilesCached<AtaAutor>('id, nome, apelido'),
+        supabase
+          .from('atas_reuniao')
+          .select('*')
+          .order('data_reuniao', { ascending: false })
+          .order('created_at', { ascending: false })
+      ]);
 
-      if (!driveError && driveData?.valor) {
-        setDriveUrl(driveData.valor);
+      if (!driveRes.error && driveRes.data?.valor) {
+        setDriveUrl(driveRes.data.valor);
       }
-
-      // 2. Carrega lista de perfis para associar autores
-      const { data: perfisRaw } = await supabase
-        .from('profiles')
-        .select('id, nome, apelido');
 
       const perfisMap: Record<string, AtaAutor> = {};
       perfisRaw?.forEach((p) => {
         perfisMap[p.id] = p;
       });
 
-      // 3. Carrega atas de reunião
-      const { data: atasRaw, error: atasError } = await supabase
-        .from('atas_reuniao')
-        .select('*')
-        .order('data_reuniao', { ascending: false })
-        .order('created_at', { ascending: false });
-
-      if (atasError) {
-        console.error('[AtasScreen] Erro ao carregar atas:', atasError);
-      } else if (atasRaw) {
-        const formatadas: AtaReuniao[] = atasRaw.map((a) => ({
+      if (atasRes.error) {
+        console.error('[AtasScreen] Erro ao carregar atas:', atasRes.error);
+      } else if (atasRes.data) {
+        const formatadas: AtaReuniao[] = atasRes.data.map((a) => ({
           ...a,
           autor: a.publicada_por ? perfisMap[a.publicada_por] || null : null,
         }));
@@ -120,22 +119,30 @@ export const AtasScreen: React.FC<AtasScreenProps> = ({ onBack }) => {
   useEffect(() => {
     carregarDados();
 
-    // Inscrição Realtime para atas_reuniao e house_settings
+    const agendarCarregarDados = () => {
+      if (atasDebounceRef.current) clearTimeout(atasDebounceRef.current);
+      atasDebounceRef.current = setTimeout(() => {
+        carregarDados();
+      }, 800);
+    };
+
+    // Inscrição Realtime para atas_reuniao e house_settings com debounce
     const channel = supabase
       .channel('atas-screen-realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'atas_reuniao' },
-        () => carregarDados()
+        agendarCarregarDados
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'house_settings' },
-        () => carregarDados()
+        agendarCarregarDados
       )
       .subscribe();
 
     return () => {
+      if (atasDebounceRef.current) clearTimeout(atasDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarDados]);

@@ -19,82 +19,108 @@ export async function compressImageToBlob(
   const preferredType = options.preferredType || 'image/webp';
 
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Falha ao ler o arquivo de imagem selecionado.'));
+    let objectUrl: string | null = null;
+    const img = new Image();
 
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Arquivo de imagem inválido ou corrompido.'));
-
-      img.onload = () => {
-        let { width, height } = img;
-
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
+    const cleanup = () => {
+      if (objectUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch {
+          // ignora erro ao revogar
         }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          // Fallback para blob do próprio arquivo original se canvas context falhar
-          resolve({
-            blob: file,
-            contentType: file.type || 'image/jpeg',
-            ext: file.type.includes('png') ? 'png' : 'jpg',
-          });
-          return;
-        }
-
-        // Desenha a imagem redimensionada
-        ctx.drawImage(img, 0, 0, width, height);
-
-        // Tenta exportar em WebP; se o browser não suportar, faz fallback para JPEG
-        canvas.toBlob(
-          (blob) => {
-            if (blob && blob.size > 0) {
-              const isWebp = blob.type === 'image/webp';
-              resolve({
-                blob,
-                contentType: isWebp ? 'image/webp' : 'image/jpeg',
-                ext: isWebp ? 'webp' : 'jpg',
-              });
-            } else {
-              canvas.toBlob(
-                (fallbackBlob) => {
-                  if (fallbackBlob) {
-                    resolve({
-                      blob: fallbackBlob,
-                      contentType: 'image/jpeg',
-                      ext: 'jpg',
-                    });
-                  } else {
-                    reject(new Error('Falha ao processar e comprimir a imagem.'));
-                  }
-                },
-                'image/jpeg',
-                quality
-              );
-            }
-          },
-          preferredType,
-          quality
-        );
-      };
-
-      img.src = e.target?.result as string;
+        objectUrl = null;
+      }
     };
 
+    img.onerror = () => {
+      cleanup();
+      reject(new Error('Arquivo de imagem inválido ou corrompido.'));
+    };
+
+    img.onload = () => {
+      cleanup();
+      let { width, height } = img;
+
+      if (width > height) {
+        if (width > maxDim) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        }
+      } else {
+        if (height > maxDim) {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        // Fallback para blob do próprio arquivo original se canvas context falhar
+        resolve({
+          blob: file,
+          contentType: file.type || 'image/jpeg',
+          ext: file.type.includes('png') ? 'png' : 'jpg',
+        });
+        return;
+      }
+
+      // Desenha a imagem redimensionada
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Tenta exportar em WebP; se o browser não suportar, faz fallback para JPEG
+      canvas.toBlob(
+        (blob) => {
+          if (blob && blob.size > 0) {
+            const isWebp = blob.type === 'image/webp';
+            resolve({
+              blob,
+              contentType: isWebp ? 'image/webp' : 'image/jpeg',
+              ext: isWebp ? 'webp' : 'jpg',
+            });
+          } else {
+            canvas.toBlob(
+              (fallbackBlob) => {
+                if (fallbackBlob) {
+                  resolve({
+                    blob: fallbackBlob,
+                    contentType: 'image/jpeg',
+                    ext: 'jpg',
+                  });
+                } else {
+                  reject(new Error('Falha ao processar e comprimir a imagem.'));
+                }
+              },
+              'image/jpeg',
+              quality
+            );
+          }
+        },
+        preferredType,
+        quality
+      );
+    };
+
+    // Prioriza URL.createObjectURL para evitar gerar strings base64 gigantes na RAM e no Network log
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      try {
+        objectUrl = URL.createObjectURL(file);
+        img.src = objectUrl;
+        return;
+      } catch {
+        // Fallback para FileReader se createObjectURL não puder ser chamado
+      }
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Falha ao ler o arquivo de imagem selecionado.'));
+    reader.onload = (e) => {
+      img.src = e.target?.result as string;
+    };
     reader.readAsDataURL(file);
   });
 }

@@ -13,6 +13,7 @@ import {
   Shield,
   ChevronRight,
   ShieldAlert,
+  RefreshCw,
 } from 'lucide-react';
 import {
   type AppNotification,
@@ -31,6 +32,8 @@ interface NotificationsDrawerProps {
   onMarkAsRead: (id: string) => void;
   onMarkAllAsRead: () => void;
   onNavigate: (targetScreen: NotificationTargetScreen, params?: Record<string, any>) => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }
 
 export const NotificationsDrawer: React.FC<NotificationsDrawerProps> = ({
@@ -43,6 +46,8 @@ export const NotificationsDrawer: React.FC<NotificationsDrawerProps> = ({
   onMarkAsRead,
   onMarkAllAsRead,
   onNavigate,
+  onRefresh,
+  isRefreshing,
 }) => {
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
 
@@ -118,6 +123,17 @@ export const NotificationsDrawer: React.FC<NotificationsDrawerProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
+            {onRefresh && (
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isRefreshing}
+                title="Forçar sincronização com o banco"
+                className="p-2 text-muted hover:text-forest transition-colors rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-forest' : ''}`} />
+              </button>
+            )}
             {unreadCount > 0 && (
               <button
                 type="button"

@@ -22,28 +22,28 @@ export function useHouseLinks(): HouseLinks {
 
   const fetchLinks = useCallback(async () => {
     try {
-      // 1. Busca o link do Drive na tabela house_settings
-      const { data: driveData, error: driveError } = await supabase
-        .from('house_settings')
-        .select('valor')
-        .eq('chave', 'drive_url')
-        .maybeSingle();
+      // Executa as duas consultas em paralelo
+      const [driveRes, ataRes] = await Promise.all([
+        supabase
+          .from('house_settings')
+          .select('valor')
+          .eq('chave', 'drive_url')
+          .maybeSingle(),
+        supabase
+          .from('atas_reuniao')
+          .select('url, data_reuniao')
+          .order('data_reuniao', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      ]);
 
-      if (!driveError && driveData?.valor) {
-        setDriveUrl(driveData.valor);
+      if (!driveRes.error && driveRes.data?.valor) {
+        setDriveUrl(driveRes.data.valor);
       }
 
-      // 2. Busca a última ata na tabela atas_reuniao (ordenada pela data decrescente)
-      const { data: ataData, error: ataError } = await supabase
-        .from('atas_reuniao')
-        .select('url, data_reuniao')
-        .order('data_reuniao', { ascending: false })
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!ataError && ataData?.url) {
-        setUltimaAtaUrl(ataData.url);
+      if (!ataRes.error && ataRes.data?.url) {
+        setUltimaAtaUrl(ataRes.data.url);
       }
     } catch (err) {
       console.warn('[useHouseLinks] Erro ao carregar links do Supabase:', err);
@@ -55,26 +55,31 @@ export function useHouseLinks(): HouseLinks {
   useEffect(() => {
     fetchLinks();
 
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const agendarFetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetchLinks();
+      }, 800);
+    };
+
     // Sincronização em tempo real para house_settings e atas_reuniao
     const channel = supabase
       .channel('house-links-realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'house_settings' },
-        () => {
-          fetchLinks();
-        }
+        agendarFetch
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'atas_reuniao' },
-        () => {
-          fetchLinks();
-        }
+        agendarFetch
       )
       .subscribe();
 
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [fetchLinks]);

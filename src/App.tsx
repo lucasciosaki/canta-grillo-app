@@ -22,6 +22,7 @@ import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
 import { useNotifications } from './hooks/useNotifications';
 import { NotificationsDrawer } from './features/notificacoes/NotificationsDrawer';
 import type { NotificationTargetScreen } from './types/notificacoes';
+import { getProfilesCached, invalidateCache } from './utils/sessionDataCache';
 
 type Screen =
   | 'home' | 'rotina' | 'casa'
@@ -48,6 +49,8 @@ function MainApp() {
   const [frenteFiltroFuncas, setFrenteFiltroFuncas] = useState<string | null>(null);
 
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const {
     notifications,
     unreadCount,
@@ -55,6 +58,8 @@ function MainApp() {
     requestPermission,
     markAsRead,
     markAllAsRead,
+    forceRefresh,
+    markPontoVisualizadoLocal,
   } = useNotifications();
 
   const screen = stack[stack.length - 1];
@@ -87,7 +92,7 @@ function MainApp() {
   // Carrega pontos de bagunça, visualizações e mensagens do Supabase em paralelo
   const carregarPontosBagunca = useCallback(async () => {
     try {
-      const [pontosRes, perfisRes, visRes, msgRes] = await Promise.all([
+      const [pontosRes, perfisData, visRes] = await Promise.all([
         // 1. Pontos abertos (colunas explícitas)
         supabase
           .from('pontos_bagunca')
@@ -95,10 +100,8 @@ function MainApp() {
           .eq('status', 'aberta')
           .order('created_at', { ascending: false }),
 
-        // 2. Perfis para mapeamento de apelido
-        supabase
-          .from('profiles')
-          .select('id, nome, apelido'),
+        // 2. Perfis para mapeamento de apelido (com cache em memória RAM)
+        getProfilesCached('id, nome, apelido'),
 
         // 3. Visualizações do morador logado
         user?.id
@@ -107,20 +110,11 @@ function MainApp() {
               .select('ponto_id')
               .eq('morador_id', user.id)
           : Promise.resolve({ data: [] }),
-
-        // 4. Mensagens de discussão
-        supabase
-          .from('mensagens_ponto_bagunca')
-          .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
-          .order('enviada_em', { ascending: true })
-          .limit(100),
       ]);
 
-      const pontosRaw = pontosRes.data;
-      if (!pontosRaw) return;
-
+      const pontosRaw = pontosRes.data || [];
       const perfisMap: Record<string, { id: string; nome: string; apelido: string | null }> = {};
-      perfisRes.data?.forEach((p) => {
+      (perfisData || []).forEach((p: any) => {
         perfisMap[p.id] = p;
       });
 
@@ -136,16 +130,29 @@ function MainApp() {
         setVisualizacoesIds(new Set((visRes.data as any[]).map((v) => v.ponto_id)));
       }
 
-      if (msgRes.data) {
-        const mapa: Record<string, MensagemPontoBagunca[]> = {};
-        msgRes.data.forEach((m) => {
-          if (!mapa[m.ponto_bagunca_id]) mapa[m.ponto_bagunca_id] = [];
-          mapa[m.ponto_bagunca_id].push({
-            ...m,
-            autor: perfisMap[m.autor_id] || null,
+      // 4. Mensagens filtradas estritamente para os pontos atualmente abertos
+      const pontosAbertosIds = pontosRaw.map((p) => p.id);
+      if (pontosAbertosIds.length > 0) {
+        const { data: msgData } = await supabase
+          .from('mensagens_ponto_bagunca')
+          .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
+          .in('ponto_bagunca_id', pontosAbertosIds)
+          .order('enviada_em', { ascending: true })
+          .limit(100);
+
+        if (msgData) {
+          const mapa: Record<string, MensagemPontoBagunca[]> = {};
+          msgData.forEach((m) => {
+            if (!mapa[m.ponto_bagunca_id]) mapa[m.ponto_bagunca_id] = [];
+            mapa[m.ponto_bagunca_id].push({
+              ...m,
+              autor: perfisMap[m.autor_id] || null,
+            });
           });
-        });
-        setMensagensMap(mapa);
+          setMensagensMap(mapa);
+        }
+      } else {
+        setMensagensMap({});
       }
     } catch (err) {
       console.error('[App] Erro ao carregar pontos de bagunça:', err);
@@ -156,31 +163,38 @@ function MainApp() {
     carregarPontosBagunca();
   }, [carregarPontosBagunca]);
 
-  // Realtime para pontos de bagunça com debounce para evitar tempestade de requisições
-  useEffect(() => {
-    const triggerDebounced = () => {
+  // Agendador unificado com debounce para evitar tempestade ou duplicação de requisições
+  const agendarCarregarPontosBagunca = useCallback(
+    (delayMs = 400) => {
       if (pontosDebounceRef.current) clearTimeout(pontosDebounceRef.current);
       pontosDebounceRef.current = setTimeout(() => {
         carregarPontosBagunca();
-      }, 1000);
-    };
+      }, delayMs);
+    },
+    [carregarPontosBagunca]
+  );
 
+  // Realtime para pontos de bagunça (visualizações locais não disparam refetch no banco)
+  useEffect(() => {
     const channel = supabase
       .channel('pontos-bagunca-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, triggerDebounced)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, triggerDebounced)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, () =>
+        agendarCarregarPontosBagunca(800)
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () =>
+        agendarCarregarPontosBagunca(800)
+      )
       .subscribe();
 
     return () => {
       if (pontosDebounceRef.current) clearTimeout(pontosDebounceRef.current);
       supabase.removeChannel(channel);
     };
-  }, [carregarPontosBagunca]);
+  }, [agendarCarregarPontosBagunca]);
 
-  // Carrega resumo do dia de hoje para o card da Home
+  // Carrega resumo do dia de hoje estritamente na Home (evita requisições em subtelas)
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || screen !== 'home') return;
     const hoje = getLocalDateString(new Date());
     supabase
       .from('daily_meals')
@@ -200,6 +214,23 @@ function MainApp() {
         }
       });
   }, [user?.id, screen]);
+
+  // Força atualização manual de dados
+  const handleForceRefreshAll = async () => {
+    setIsRefreshing(true);
+    try {
+      invalidateCache();
+      await Promise.all([
+        forceRefresh(),
+        carregarPontosBagunca(),
+        carregarFuncasHome(),
+      ]);
+    } catch (err) {
+      console.warn('[App] Erro ao sincronizar manualmente:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Carrega funças para a seção da Home
   const carregarFuncasHome = useCallback(async () => {
@@ -271,8 +302,9 @@ function MainApp() {
   const handleAbrirPonto = async (pontoId: string) => {
     if (!user?.id) return;
 
-    // Atualização otimista
+    // Atualização otimista local imediata no App e no hook de notificações (0 requests)
     setVisualizacoesIds((prev) => new Set(prev).add(pontoId));
+    markPontoVisualizadoLocal(pontoId);
 
     try {
       await supabase
@@ -528,7 +560,7 @@ function MainApp() {
           <DenunciaPontoScreen
             onBack={goBack}
             onSuccess={() => {
-              carregarPontosBagunca();
+              agendarCarregarPontosBagunca(0);
               goBack();
             }}
           />
@@ -577,6 +609,8 @@ function MainApp() {
         subtitle="República desde 2004"
         unreadNotifications={unreadCount}
         onNotificationsClick={() => setIsNotificationsOpen(true)}
+        onRefresh={handleForceRefreshAll}
+        isRefreshing={isRefreshing}
         onSignOut={signOut}
       >
         {renderContent()}
@@ -592,6 +626,8 @@ function MainApp() {
         onMarkAsRead={markAsRead}
         onMarkAllAsRead={markAllAsRead}
         onNavigate={handleNavigateFromNotification}
+        onRefresh={handleForceRefreshAll}
+        isRefreshing={isRefreshing}
       />
     </>
   );

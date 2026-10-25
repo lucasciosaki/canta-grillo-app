@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Front, FrontMember, FrenteDetalheTab } from '../../types/frentes';
 import type { Profile } from '../../types/auth';
+import { getProfilesCached, getFrontsCached } from '../../utils/sessionDataCache';
 import {
   filtrarFrentesVisiveis,
   verificarPermissaoFrente,
@@ -60,49 +61,39 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({
   const [salvando, setSalvando] = useState(false);
   const [feedback, setFeedback] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
 
+  const frentesDebounceRef = useRef<any>(null);
+
   const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. Busca todas as frentes
-      const { data: frontsData, error: frontsError } = await supabase
-        .from('fronts')
-        .select('*')
-        .order('nome');
+      // Busca frentes, membros, perfis ativos e contagem de funças em paralelo
+      const [frontsData, membersRes, profilesData, funcasRes] = await Promise.all([
+        getFrontsCached<Front>(),
+        supabase.from('front_members').select('*, profile:profiles(*, quarto:rooms(*))'),
+        getProfilesCached<Profile>('*'),
+        supabase
+          .from('funcas')
+          .select('id, frente_id, status')
+          .neq('status', 'concluida')
+          .not('frente_id', 'is', null),
+      ]);
 
-      if (!frontsError && frontsData) {
+      if (frontsData) {
         setFrentes(frontsData as Front[]);
       }
 
-      // 2. Busca todas as alocações de membros com dados de perfil (apenas moradores ativos)
-      const { data: membersData, error: membersError } = await supabase
-        .from('front_members')
-        .select('*, profile:profiles(*, quarto:rooms(*))');
-
-      if (!membersError && membersData) {
-        setMembros(membersData as FrontMember[]);
+      if (!membersRes.error && membersRes.data) {
+        setMembros(membersRes.data as FrontMember[]);
       }
-
-      // 3. Busca lista de todos os moradores ativos para o admin poder alocar
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('ativo', true)
-        .order('nome');
 
       if (profilesData) {
-        setTodosMoradores(profilesData as Profile[]);
+        const apenasAtivos = (profilesData as Profile[]).filter((p) => p.ativo);
+        setTodosMoradores(apenasAtivos);
       }
 
-      // 4. Busca contagem de funças pendentes por frente
-      const { data: funcasData } = await supabase
-        .from('funcas')
-        .select('id, frente_id, status')
-        .neq('status', 'concluida')
-        .not('frente_id', 'is', null);
-
-      if (funcasData) {
+      if (funcasRes.data) {
         const counts: Record<string, number> = {};
-        funcasData.forEach((f: any) => {
+        funcasRes.data.forEach((f: any) => {
           if (f.frente_id) {
             counts[f.frente_id] = (counts[f.frente_id] || 0) + 1;
           }
@@ -120,19 +111,23 @@ export const FrentesScreen: React.FC<FrentesScreenProps> = ({
     carregarDados();
   }, [carregarDados]);
 
-  // Realtime para contagem de funças e alterações em membros
+  // Realtime para contagem de funças e alterações em membros com debounce de 800ms
   useEffect(() => {
+    const triggerDebounced = () => {
+      if (frentesDebounceRef.current) clearTimeout(frentesDebounceRef.current);
+      frentesDebounceRef.current = setTimeout(() => {
+        carregarDados();
+      }, 800);
+    };
+
     const channel = supabase
       .channel('frentes-funcas-channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () => {
-        carregarDados();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () => {
-        carregarDados();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, triggerDebounced)
       .subscribe();
 
     return () => {
+      if (frentesDebounceRef.current) clearTimeout(frentesDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarDados]);
