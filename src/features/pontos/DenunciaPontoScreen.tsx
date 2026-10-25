@@ -9,47 +9,7 @@ interface DenunciaPontoScreenProps {
   onSuccess?: () => void;
 }
 
-/** Comprime imagem no cliente para evitar uploads pesados (max 1024px e qualidade 0.75) */
-async function comprimirImagemParaDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1024;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(e.target?.result as string);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
-      };
-      img.onerror = reject;
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+import { uploadImageToBucket } from '../../utils/imageStorage';
 
 export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
   onBack,
@@ -96,32 +56,22 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
     setErro(null);
 
     try {
-      let fotoUrlParaSalvar = fotoPreview;
+      let fotoUrlParaSalvar: string;
 
-      // 1. Processa e comprime a foto
+      // 1. Processa, comprime em WebP e faz upload direto para o Supabase Storage
       if (fotoFile) {
-        const compressedDataUrl = await comprimirImagemParaDataUrl(fotoFile);
-        fotoUrlParaSalvar = compressedDataUrl;
-
-        // Tenta enviar para o bucket 'pontos_bagunca' no Supabase Storage se disponível
-        try {
-          const fileName = `${user.id}_${Date.now()}.jpg`;
-          const resBlob = await (await fetch(compressedDataUrl)).blob();
-          const { error: uploadError } = await supabase.storage
-            .from('pontos_bagunca')
-            .upload(fileName, resBlob, { contentType: 'image/jpeg' });
-
-          if (!uploadError) {
-            const { data: publicUrlData } = supabase.storage
-              .from('pontos_bagunca')
-              .getPublicUrl(fileName);
-            if (publicUrlData?.publicUrl) {
-              fotoUrlParaSalvar = publicUrlData.publicUrl;
-            }
-          }
-        } catch {
-          // Fallback silencioso para data URL em base64 garantindo funcionamento mesmo sem bucket criado
-        }
+        fotoUrlParaSalvar = await uploadImageToBucket({
+          bucket: 'pontos_bagunca',
+          userId: user.id,
+          prefix: 'ponto',
+          file: fotoFile,
+          maxDim: 800,
+          quality: 0.72,
+        });
+      } else if (fotoPreview.startsWith('http')) {
+        fotoUrlParaSalvar = fotoPreview;
+      } else {
+        throw new Error('Foto inválida ou não selecionada.');
       }
 
       // 2. Insere na tabela public.pontos_bagunca

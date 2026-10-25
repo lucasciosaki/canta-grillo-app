@@ -13,6 +13,7 @@ import {
   sendBrowserPush,
   hasBeenPushed,
   prunePushedEvents,
+  subscribeToWebPush,
 } from '../utils/browserPush';
 
 const STORAGE_KEY_READ = 'canta_grillo_read_notifications_v1';
@@ -37,17 +38,33 @@ export function useNotifications() {
   const readIdsRef = useRef(readIds);
   readIdsRef.current = readIds;
 
-  // Atualiza permissão nativa de notificações
+  // Cache em memória do último contexto carregado para evitar requisições de rede no timer de 60s
+  const lastEvaluationContextRef = useRef<NotificationEvaluationContext | null>(null);
+
+  // Timer de debounce para eventos do Realtime
+  const debounceTimerRef = useRef<any>(null);
+
+  // Atualiza permissão nativa de notificações e tenta inscrever no Web Push se já autorizado
   useEffect(() => {
-    setPermission(getNotificationPermission());
+    const currentPerm = getNotificationPermission();
+    setPermission(currentPerm);
     prunePushedEvents();
-  }, []);
+
+    if (currentPerm === 'granted' && user?.id) {
+      subscribeToWebPush(user.id).catch((err) =>
+        console.warn('[useNotifications] Falha silenciosa ao sincronizar Web Push:', err)
+      );
+    }
+  }, [user?.id]);
 
   const handleRequestPermission = useCallback(async () => {
     const res = await requestNotificationPermission();
     setPermission(res);
+    if (res === 'granted' && user?.id) {
+      await subscribeToWebPush(user.id);
+    }
     return res;
-  }, []);
+  }, [user?.id]);
 
   // Marca uma notificação individual como lida
   const markAsRead = useCallback((id: string) => {
@@ -88,7 +105,7 @@ export function useNotifications() {
     setNotifications([]);
   }, []);
 
-  // Busca todos os dados necessários do Supabase e deriva as notificações
+  // Busca dados em paralelo (Promise.all) com colunas leves (zero Base64)
   const carregarNotificacoes = useCallback(async () => {
     if (!user?.id) return;
     setIsLoading(true);
@@ -98,39 +115,146 @@ export function useNotifications() {
       const { dateStr } = getBrasiliaDateParts(agora);
       const isAdmin = profile?.role === 'admin';
 
-      // 1. Perfis para mapeamento de apelido
-      const { data: perfisRaw } = await supabase
-        .from('profiles')
-        .select('id, nome, apelido, role, ativo, quarto_id');
+      // Dispara 1ª onda de consultas independentes em paralelo com colunas restritas e leves
+      const [
+        perfisRes,
+        pontosRes,
+        visRes,
+        msgPontosRes,
+        frontsRes,
+        meusMembrosRes,
+        areasRes,
+        escalasSemanaRes,
+        tarefasHojeRes,
+        funcasRes,
+        dogsRes,
+        mealRes,
+        caixasRes,
+        adminPerfisRes,
+        adminBaixasRes,
+      ] = await Promise.all([
+        // 1. Perfis (sem avatar_url pesado)
+        supabase
+          .from('profiles')
+          .select('id, nome, apelido, role, ativo, quarto_id'),
+
+        // 2. Pontos de Bagunça abertos (SEM foto_url Base64!)
+        supabase
+          .from('pontos_bagunca')
+          .select('id, relator_id, culpado_id, local_descricao, status, created_at')
+          .order('created_at', { ascending: false }),
+
+        // 3. Visualizações do morador
+        supabase
+          .from('pontos_bagunca_visualizacoes')
+          .select('ponto_id')
+          .eq('morador_id', user.id),
+
+        // 4. Mensagens recentes em pontos de bagunça
+        supabase
+          .from('mensagens_ponto_bagunca')
+          .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
+          .order('enviada_em', { ascending: false })
+          .limit(20),
+
+        // 5. Frentes
+        supabase
+          .from('fronts')
+          .select('id, nome, slug'),
+
+        // 6. Minhas Frentes
+        supabase
+          .from('front_members')
+          .select('front_id, is_lider, data_inicio')
+          .eq('profile_id', user.id),
+
+        // 7. Áreas comuns
+        supabase
+          .from('areas_comuns')
+          .select('id, nome'),
+
+        // 8. Escala semanal de faxina
+        supabase
+          .from('escala_semanal_faxina')
+          .select('id, quarto_id, area_comum_id, semana_ano, pontos_faltas'),
+
+        // 9. Tarefa do dia de faxina (SEM fotos_comprovacao nem fiscal_foto_url!)
+        supabase
+          .from('registro_diario_faxina')
+          .select('id, quarto_id, area_comum_id, data, status, fiscal_status')
+          .eq('data', dateStr),
+
+        // 10. Funças e atribuições (SEM foto_url!)
+        supabase
+          .from('funcas')
+          .select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)'),
+
+        // 11. Refeições dos Dogs hoje
+        supabase
+          .from('dogs_refeicoes_diarias')
+          .select('turno')
+          .eq('data', dateStr),
+
+        // 12. Misturas do morador hoje
+        supabase
+          .from('daily_meals')
+          .select('misturas_consumidas')
+          .eq('usuario_id', user.id)
+          .eq('data', dateStr)
+          .maybeSingle(),
+
+        // 13. Caixas de cerveja do morador
+        supabase
+          .from('caixas_cerveja')
+          .select('id, motivo_descricao, status')
+          .eq('morador_id', user.id),
+
+        // 14. Admin: contagem de perfis pendentes
+        isAdmin
+          ? supabase
+              .from('profiles')
+              .select('id', { count: 'exact', head: true })
+              .eq('ativo', false)
+          : Promise.resolve({ count: 0 }),
+
+        // 15. Admin: contagem de baixas de cerveja pendentes
+        isAdmin
+          ? supabase
+              .from('caixas_cerveja')
+              .select('id', { count: 'exact', head: true })
+              .eq('status', 'baixa_solicitada')
+          : Promise.resolve({ count: 0 }),
+      ]);
+
+      // Mapeamento dos perfis
       const perfisMap: Record<string, any> = {};
-      perfisRaw?.forEach((p) => {
+      perfisRes.data?.forEach((p) => {
         perfisMap[p.id] = p;
       });
 
-      // 2. Pontos de Bagunça abertos e visualizações do morador
-      const { data: pontosRaw } = await supabase
-        .from('pontos_bagunca')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Mapeamento das frentes
+      const frontsMap: Record<string, { id: string; nome: string; slug: string }> = {};
+      frontsRes.data?.forEach((f) => {
+        frontsMap[f.id] = f;
+      });
 
-      const { data: visData } = await supabase
-        .from('pontos_bagunca_visualizacoes')
-        .select('ponto_id')
-        .eq('morador_id', user.id);
-      const visualizacoesIds = new Set<string>((visData || []).map((v) => v.ponto_id));
+      const userFrontIds = new Set<string>((meusMembrosRes.data || []).map((m) => m.front_id));
+      const alocacoesFrente = (meusMembrosRes.data || []).map((m) => ({
+        front_id: m.front_id,
+        frente_nome: frontsMap[m.front_id]?.nome || 'Frente',
+        is_lider: Boolean(m.is_lider),
+        data_inicio: m.data_inicio || agora.toISOString(),
+      }));
 
-      // 3. Mensagens de discussão em pontos de bagunça abertos
-      const pontosAbertosIds = new Set((pontosRaw || []).filter((p) => p.status === 'aberta').map((p) => p.id));
-      const { data: msgPontosRaw } = await supabase
-        .from('mensagens_ponto_bagunca')
-        .select('*')
-        .order('enviada_em', { ascending: false })
-        .limit(20);
+      // Pontos de bagunça abertos e mensagens
+      const pontosRaw = pontosRes.data || [];
+      const visualizacoesIds = new Set<string>((visRes.data || []).map((v) => v.ponto_id));
+      const pontosAbertosIds = new Set(pontosRaw.filter((p) => p.status === 'aberta').map((p) => p.id));
 
-      const pontosMensagens = (msgPontosRaw || [])
+      const pontosMensagens = (msgPontosRes.data || [])
         .filter((m) => pontosAbertosIds.has(m.ponto_bagunca_id) && m.autor_id !== user.id)
         .map((m) => {
-          const ponto = pontosRaw?.find((p) => p.id === m.ponto_bagunca_id);
+          const ponto = pontosRaw.find((p) => p.id === m.ponto_bagunca_id);
           const autor = perfisMap[m.autor_id];
           return {
             id: m.id,
@@ -143,9 +267,9 @@ export function useNotifications() {
           };
         });
 
-      // Pontos individuais assumidos pelo morador no mês vigente
+      // Pontos individuais assumidos no mês vigente
       const inicioMesStr = `${dateStr.slice(0, 7)}-01`;
-      const pontosDoMorador = (pontosRaw || []).filter(
+      const pontosDoMorador = pontosRaw.filter(
         (p) => p.culpado_id === user.id && p.created_at >= inicioMesStr
       );
       const pontosIndividuaisCreditados = pontosDoMorador.map((p) => ({
@@ -154,39 +278,36 @@ export function useNotifications() {
         totalPontosMes: pontosDoMorador.length,
       }));
 
-      // 4. Frentes e Participação
-      const { data: frontsRaw } = await supabase.from('fronts').select('id, nome, slug');
-      const frontsMap: Record<string, { id: string; nome: string; slug: string }> = {};
-      frontsRaw?.forEach((f) => {
-        frontsMap[f.id] = f;
-      });
-
-      const { data: meusMembrosRaw } = await supabase
-        .from('front_members')
-        .select('*')
-        .eq('profile_id', user.id);
-
-      const userFrontIds = new Set<string>((meusMembrosRaw || []).map((m) => m.front_id));
-      const alocacoesFrente = (meusMembrosRaw || []).map((m) => ({
-        front_id: m.front_id,
-        frente_nome: frontsMap[m.front_id]?.nome || 'Frente',
-        is_lider: Boolean(m.is_lider),
-        data_inicio: m.data_inicio || agora.toISOString(),
-      }));
-
-      // Mensagens recentes nos chats das frentes do morador
+      // Mensagens de frente (2ª onda rápida se houver frentes)
       let mensagensFrente: any[] = [];
-      if (userFrontIds.size > 0) {
-        const { data: msgFrentesRaw } = await supabase
-          .from('mensagens_frente')
-          .select('*')
-          .in('frente_id', Array.from(userFrontIds))
-          .order('enviada_em', { ascending: false })
-          .limit(20);
+      let solicitacoesMercado: any[] = [];
 
-        mensagensFrente = (msgFrentesRaw || [])
-          .filter((m) => m.autor_id !== user.id)
-          .map((m) => {
+      const isMercadoMember = Array.from(userFrontIds).some(
+        (fId) => frontsMap[fId]?.slug === 'mercado'
+      );
+
+      const [msgFrentesRes, mercadoRes] = await Promise.all([
+        userFrontIds.size > 0
+          ? supabase
+              .from('mensagens_frente')
+              .select('id, frente_id, autor_id, conteudo, enviada_em')
+              .in('frente_id', Array.from(userFrontIds))
+              .order('enviada_em', { ascending: false })
+              .limit(20)
+          : Promise.resolve({ data: [] }),
+        isMercadoMember
+          ? supabase
+              .from('solicitacoes_mercado')
+              .select('item_id, solicitado_por, status, item:market_catalog(nome)')
+              .eq('status', 'solicitado')
+              .limit(10)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      if (msgFrentesRes.data) {
+        mensagensFrente = (msgFrentesRes.data || [])
+          .filter((m: any) => m.autor_id !== user.id)
+          .map((m: any) => {
             const autor = perfisMap[m.autor_id];
             return {
               id: m.id,
@@ -200,45 +321,46 @@ export function useNotifications() {
           });
       }
 
+      if (mercadoRes.data) {
+        solicitacoesMercado = (mercadoRes.data || []).map((s: any) => {
+          const solicitante = perfisMap[s.solicitado_por];
+          return {
+            id: `${s.item_id}-${s.solicitado_por}`,
+            item_nome: s.item?.nome || 'Item',
+            solicitante_apelido: solicitante?.apelido || solicitante?.nome?.split(' ')[0] || 'Morador',
+            solicitado_por: s.solicitado_por,
+          };
+        });
+      }
+
       // 5. Quadro de Faxina
       let escalasQuarto: any = null;
       let quartoFiscalId: string | null = null;
-      let tarefasFiscalPendenteOntem: any[] = [];
-      let novasFotosFiscalHoje: any[] = [];
-      let pontosFaltaRecebidos: any[] = [];
+      const tarefasFiscalPendenteOntem: any[] = [];
+      const novasFotosFiscalHoje: any[] = [];
+      const pontosFaltaRecebidos: any[] = [];
 
-      // Descobre área de Halls e quarto escalado hoje
-      const { data: areasRaw } = await supabase.from('areas_comuns').select('id, nome');
-      const hallsArea = areasRaw?.find((a) => a.nome.toLowerCase().includes('halls'));
+      const areasRaw = areasRes.data || [];
+      const hallsArea = areasRaw.find((a) => a.nome.toLowerCase().includes('halls'));
+      const escalasSemanaRaw = escalasSemanaRes.data || [];
 
-      // Escala da semana
-      const { data: escalasSemanaRaw } = await supabase
-        .from('escala_semanal_faxina')
-        .select('*');
-
-      if (hallsArea && escalasSemanaRaw) {
+      if (hallsArea && escalasSemanaRaw.length > 0) {
         const itemHalls = escalasSemanaRaw.find((e) => e.area_comum_id === hallsArea.id);
         if (itemHalls) quartoFiscalId = itemHalls.quarto_id;
       }
 
-      if (profile?.quarto_id && escalasSemanaRaw) {
+      if (profile?.quarto_id && escalasSemanaRaw.length > 0) {
         const minhaEscala = escalasSemanaRaw.find((e) => e.quarto_id === profile.quarto_id);
         if (minhaEscala) {
-          const areaNome = areasRaw?.find((a) => a.id === minhaEscala.area_comum_id)?.nome;
-          // Verifica se enviou foto hoje
-          const { data: tarefaHojeRaw } = await supabase
-            .from('registro_diario_faxina')
-            .select('*')
-            .eq('quarto_id', profile.quarto_id)
-            .eq('data', dateStr)
-            .maybeSingle();
+          const areaNome = areasRaw.find((a) => a.id === minhaEscala.area_comum_id)?.nome;
+          const tarefaHoje = (tarefasHojeRes.data || []).find((t) => t.quarto_id === profile.quarto_id);
 
           escalasQuarto = {
             semana_ano: minhaEscala.semana_ano,
             pontos_faltas: minhaEscala.pontos_faltas,
             area_nome: areaNome,
             isEscaladoHoje: Boolean(minhaEscala),
-            jaEnviouFotoHoje: tarefaHojeRaw?.status === 'cumprido',
+            jaEnviouFotoHoje: tarefaHoje?.status === 'cumprido',
           };
 
           if (minhaEscala.pontos_faltas > 0) {
@@ -251,47 +373,26 @@ export function useNotifications() {
         }
       }
 
-      // Se for fiscal (Halls): busca fotos pendentes
-      const isFiscal = Boolean(
-        profile?.quarto_id && quartoFiscalId === profile.quarto_id
-      );
+      // Se for fiscal (Halls): verifica fotos pendentes de hoje
+      const isFiscal = Boolean(profile?.quarto_id && quartoFiscalId === profile.quarto_id);
       if (isFiscal) {
-        const { data: registrosPendentes } = await supabase
-          .from('registro_diario_faxina')
-          .select('id, data, status, fiscal_status, quarto:quartos(nome), area:areas_comuns(nome)')
-          .eq('status', 'cumprido')
-          .eq('fiscal_status', 'pendente');
-
-        if (registrosPendentes) {
-          registrosPendentes.forEach((r: any) => {
-            if (r.data === dateStr) {
-              novasFotosFiscalHoje.push({
-                id: r.id,
-                quarto_nome: r.quarto?.nome || 'Quarto',
-                area_nome: r.area?.nome || 'Área',
-              });
-            } else {
-              tarefasFiscalPendenteOntem.push({
-                id: r.id,
-                quarto_nome: r.quarto?.nome || 'Quarto',
-                area_nome: r.area?.nome || 'Área',
-              });
-            }
-          });
-        }
+        (tarefasHojeRes.data || []).forEach((r) => {
+          if (r.status === 'cumprido' && r.fiscal_status === 'pendente') {
+            novasFotosFiscalHoje.push({
+              id: r.id,
+              quarto_nome: 'Quarto',
+              area_nome: 'Área Comum',
+            });
+          }
+        });
       }
 
-      // 6. Funcas & Trocas
-      const { data: funcasRaw } = await supabase
-        .from('funcas')
-        .select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)');
-
+      // 6. Funcas
       const minhasFuncasAtribuidas: any[] = [];
       const novasFuncasNaMinhaFrente: any[] = [];
       const pedidosTrocaRecebidos: any[] = [];
 
-      funcasRaw?.forEach((f) => {
-        // Atribuída a mim
+      (funcasRes.data || []).forEach((f: any) => {
         const minhaAtribuicao = f.atribuicoes?.find((a: any) => a.morador_id === user.id);
         if (minhaAtribuicao && f.status !== 'concluida') {
           minhasFuncasAtribuidas.push({
@@ -302,7 +403,6 @@ export function useNotifications() {
           });
         }
 
-        // Aberta na minha frente
         if (f.frente_id && userFrontIds.has(f.frente_id) && f.relator_id !== user.id) {
           novasFuncasNaMinhaFrente.push({
             id: f.id,
@@ -313,7 +413,6 @@ export function useNotifications() {
           });
         }
 
-        // Pedido de troca solicitado para mim
         const trocaParaMim = f.atribuicoes?.find((a: any) => a.troca_solicitada_para === user.id);
         if (trocaParaMim) {
           const solicitante = perfisMap[trocaParaMim.morador_id];
@@ -325,90 +424,28 @@ export function useNotifications() {
         }
       });
 
-      // 7. Mercado
-      let solicitacoesMercado: any[] = [];
-      const isMercadoMember = Array.from(userFrontIds).some(
-        (fId) => frontsMap[fId]?.slug === 'mercado'
-      );
-      if (isMercadoMember) {
-        const { data: solRaw } = await supabase
-          .from('solicitacoes_mercado')
-          .select('item_id, solicitado_por, status, item:market_catalog(nome)')
-          .eq('status', 'solicitado')
-          .limit(10);
-
-        solicitacoesMercado = (solRaw || []).map((s: any) => {
-          const solicitante = perfisMap[s.solicitado_por];
-          return {
-            id: `${s.item_id}-${s.solicitado_por}`,
-            item_nome: s.item?.nome || 'Item',
-            solicitante_apelido: solicitante?.apelido || solicitante?.nome?.split(' ')[0] || 'Morador',
-            solicitado_por: s.solicitado_por,
-          };
-        });
-      }
-
-      // 8. Dogs
+      // 7. Dogs
       let dogsRefeicaoManhaHojeFeita = false;
       let dogsRefeicaoNoiteHojeFeita = false;
-      const isDogsMember = Array.from(userFrontIds).some(
-        (fId) => frontsMap[fId]?.slug === 'dogs'
-      );
-      if (isDogsMember) {
-        const { data: dogsRaw } = await supabase
-          .from('dogs_refeicoes_diarias')
-          .select('turno')
-          .eq('data', dateStr);
+      (dogsRes.data || []).forEach((d) => {
+        if (d.turno === 'manha') dogsRefeicaoManhaHojeFeita = true;
+        if (d.turno === 'noite') dogsRefeicaoNoiteHojeFeita = true;
+      });
 
-        dogsRaw?.forEach((d) => {
-          if (d.turno === 'manha') dogsRefeicaoManhaHojeFeita = true;
-          if (d.turno === 'noite') dogsRefeicaoNoiteHojeFeita = true;
-        });
-      }
-
-      // 9. Folha de Misturas hoje
+      // 8. Misturas
       let minhasMisturasHoje: number | null = null;
-      const { data: mealRaw } = await supabase
-        .from('daily_meals')
-        .select('misturas_consumidas')
-        .eq('usuario_id', user.id)
-        .eq('data', dateStr)
-        .maybeSingle();
-
-      if (mealRaw) {
-        minhasMisturasHoje = Number(mealRaw.misturas_consumidas);
+      if (mealRes.data) {
+        minhasMisturasHoje = Number(mealRes.data.misturas_consumidas);
       }
 
-      // 10. Caixas de Cerveja
-      const { data: caixasRaw } = await supabase
-        .from('caixas_cerveja')
-        .select('*')
-        .eq('morador_id', user.id);
-
-      const minhasCaixasAtribuidas = (caixasRaw || []).map((c) => ({
+      // 9. Caixas de Cerveja
+      const minhasCaixasAtribuidas = (caixasRes.data || []).map((c) => ({
         id: c.id,
         motivo_descricao: c.motivo_descricao,
         status: c.status,
       }));
 
-      // 11. Admin Alertas
-      let perfisAguardandoAprovacaoCount = 0;
-      let solicitacoesBaixaCervejaAdminCount = 0;
-      if (isAdmin) {
-        const { count: perfisCount } = await supabase
-          .from('profiles')
-          .select('*', { count: 'exact', head: true })
-          .eq('ativo', false);
-        perfisAguardandoAprovacaoCount = perfisCount || 0;
-
-        const { count: baixasCount } = await supabase
-          .from('caixas_cerveja')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'baixa_solicitada');
-        solicitacoesBaixaCervejaAdminCount = baixasCount || 0;
-      }
-
-      // Consolida e deriva todas as notificações
+      // Consolida o contexto de avaliação
       const evaluationContext: NotificationEvaluationContext = {
         currentUser: {
           id: user.id,
@@ -420,7 +457,7 @@ export function useNotifications() {
         },
         agora,
         readNotificationIds: readIdsRef.current,
-        pontosBagunca: (pontosRaw || []).map((p) => ({
+        pontosBagunca: pontosRaw.map((p) => ({
           id: p.id,
           relator_id: p.relator_id,
           culpado_id: p.culpado_id,
@@ -448,17 +485,19 @@ export function useNotifications() {
         dogsRefeicaoNoiteHojeFeita,
         minhasMisturasHoje,
         minhasCaixasAtribuidas,
-        perfisAguardandoAprovacaoCount,
-        solicitacoesBaixaCervejaAdminCount,
+        perfisAguardandoAprovacaoCount: adminPerfisRes.count || 0,
+        solicitacoesBaixaCervejaAdminCount: adminBaixasRes.count || 0,
       };
+
+      // Salva no ref em memória para uso no timer de 60s (zero rede!)
+      lastEvaluationContextRef.current = evaluationContext;
 
       const derivadas = deriveNotifications(evaluationContext);
       setNotifications(derivadas);
 
-      // Dispara push para itens urgentes ou novos que ainda não foram enviados para o aparelho
+      // Dispara push local para novidades se o app estiver aberto
       derivadas.forEach((notif) => {
         if (!notif.read && !hasBeenPushed(notif.id)) {
-          // Dispara push para itens urgentes ou de categorias com notificação externa
           if (
             notif.urgency === 'urgent' ||
             notif.category === 'ponto_bagunca' ||
@@ -475,7 +514,6 @@ export function useNotifications() {
               url: `/?screen=${notif.targetScreen}`,
             });
           }
-
         }
       });
     } catch (err) {
@@ -485,43 +523,49 @@ export function useNotifications() {
     }
   }, [user?.id, profile?.role, profile?.quarto_id, profile?.nome, profile?.apelido, profile?.ativo]);
 
-  // Executa carga inicial
+  // Carga inicial
   useEffect(() => {
     carregarNotificacoes();
   }, [carregarNotificacoes]);
 
-  // Intervalo periódico de 60 segundos para checagem dos horários de corte (15h/21h misturas, 11h/21h dogs, 00h-01h faxina, etc.)
+  // Timer de 60s: reavaliação 100% EM MEMÓRIA (ZERO chamadas de rede ao Supabase!)
   useEffect(() => {
     const timer = setInterval(() => {
-      carregarNotificacoes();
+      if (lastEvaluationContextRef.current) {
+        const atualizado = deriveNotifications({
+          ...lastEvaluationContextRef.current,
+          agora: new Date(),
+          readNotificationIds: readIdsRef.current,
+        });
+        setNotifications(atualizado);
+      }
     }, 60000);
 
     return () => clearInterval(timer);
+  }, []);
+
+  // Debounced refresh para eventos Realtime (evita tempestade de requisições)
+  const debouncedRefresh = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      carregarNotificacoes();
+    }, 1500);
   }, [carregarNotificacoes]);
 
-  // Escuta unificada via Supabase Realtime
+  // Escuta unificada via Supabase Realtime com debounce
   useEffect(() => {
     if (!user?.id) return;
 
     const channel = supabase
       .channel('realtime_notifications_hub')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'registro_diario_faxina' }, () => {
-        carregarNotificacoes();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'registro_diario_faxina' }, debouncedRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_frente' }, (payload: any) => {
-        // Disparo otimista de Browser Push imediato se nova mensagem não for do próprio morador
         if (payload?.eventType === 'INSERT' && payload.new?.autor_id !== user.id) {
           sendBrowserPush({
             id: `msg-frente-push-${payload.new.id}`,
@@ -531,38 +575,26 @@ export function useNotifications() {
             url: '/?screen=frentes',
           });
         }
-        carregarNotificacoes();
+        debouncedRefresh();
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'solicitacoes_mercado' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'dogs_refeicoes_diarias' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_meals' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'caixas_cerveja' }, () => {
-        carregarNotificacoes();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
-        carregarNotificacoes();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'solicitacoes_mercado' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dogs_refeicoes_diarias' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_meals' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'caixas_cerveja' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, debouncedRefresh)
       .subscribe();
 
     return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
       supabase.removeChannel(channel);
     };
-  }, [user?.id, carregarNotificacoes]);
+  }, [user?.id, debouncedRefresh]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 

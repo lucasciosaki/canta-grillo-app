@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
@@ -82,25 +82,45 @@ function MainApp() {
     }
   };
 
-  // Carrega pontos de bagunça, visualizações e mensagens do Supabase
+  const pontosDebounceRef = useRef<any>(null);
+
+  // Carrega pontos de bagunça, visualizações e mensagens do Supabase em paralelo
   const carregarPontosBagunca = useCallback(async () => {
     try {
-      // 1. Busca pontos abertos
-      const { data: pontosRaw } = await supabase
-        .from('pontos_bagunca')
-        .select('*')
-        .eq('status', 'aberta')
-        .order('created_at', { ascending: false });
+      const [pontosRes, perfisRes, visRes, msgRes] = await Promise.all([
+        // 1. Pontos abertos (colunas explícitas)
+        supabase
+          .from('pontos_bagunca')
+          .select('id, relator_id, culpado_id, local_descricao, foto_url, status, created_at')
+          .eq('status', 'aberta')
+          .order('created_at', { ascending: false }),
 
+        // 2. Perfis para mapeamento de apelido
+        supabase
+          .from('profiles')
+          .select('id, nome, apelido'),
+
+        // 3. Visualizações do morador logado
+        user?.id
+          ? supabase
+              .from('pontos_bagunca_visualizacoes')
+              .select('ponto_id')
+              .eq('morador_id', user.id)
+          : Promise.resolve({ data: [] }),
+
+        // 4. Mensagens de discussão
+        supabase
+          .from('mensagens_ponto_bagunca')
+          .select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em')
+          .order('enviada_em', { ascending: true })
+          .limit(100),
+      ]);
+
+      const pontosRaw = pontosRes.data;
       if (!pontosRaw) return;
 
-      // 2. Busca perfis para exibição estrita de apelido
-      const { data: perfisRaw } = await supabase
-        .from('profiles')
-        .select('id, nome, apelido');
-
       const perfisMap: Record<string, { id: string; nome: string; apelido: string | null }> = {};
-      perfisRaw?.forEach((p) => {
+      perfisRes.data?.forEach((p) => {
         perfisMap[p.id] = p;
       });
 
@@ -112,27 +132,13 @@ function MainApp() {
 
       setPontosBagunca(formatados);
 
-      // 3. Busca visualizações do morador logado para controle do blur
-      if (user?.id) {
-        const { data: visData } = await supabase
-          .from('pontos_bagunca_visualizacoes')
-          .select('ponto_id')
-          .eq('morador_id', user.id);
-
-        if (visData) {
-          setVisualizacoesIds(new Set(visData.map((v) => v.ponto_id)));
-        }
+      if (visRes.data) {
+        setVisualizacoesIds(new Set((visRes.data as any[]).map((v) => v.ponto_id)));
       }
 
-      // 4. Busca mensagens de discussão
-      const { data: msgRaw } = await supabase
-        .from('mensagens_ponto_bagunca')
-        .select('*')
-        .order('enviada_em', { ascending: true });
-
-      if (msgRaw) {
+      if (msgRes.data) {
         const mapa: Record<string, MensagemPontoBagunca[]> = {};
-        msgRaw.forEach((m) => {
+        msgRes.data.forEach((m) => {
           if (!mapa[m.ponto_bagunca_id]) mapa[m.ponto_bagunca_id] = [];
           mapa[m.ponto_bagunca_id].push({
             ...m,
@@ -150,28 +156,24 @@ function MainApp() {
     carregarPontosBagunca();
   }, [carregarPontosBagunca]);
 
-  // Realtime para pontos de bagunça, mensagens e visualizações
+  // Realtime para pontos de bagunça com debounce para evitar tempestade de requisições
   useEffect(() => {
+    const triggerDebounced = () => {
+      if (pontosDebounceRef.current) clearTimeout(pontosDebounceRef.current);
+      pontosDebounceRef.current = setTimeout(() => {
+        carregarPontosBagunca();
+      }, 1000);
+    };
+
     const channel = supabase
       .channel('pontos-bagunca-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'pontos_bagunca' },
-        () => carregarPontosBagunca()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' },
-        () => carregarPontosBagunca()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' },
-        () => carregarPontosBagunca()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, triggerDebounced)
       .subscribe();
 
     return () => {
+      if (pontosDebounceRef.current) clearTimeout(pontosDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarPontosBagunca]);
@@ -220,22 +222,24 @@ function MainApp() {
     carregarFuncasHome();
   }, [carregarFuncasHome]);
 
+  const funcasDebounceRef = useRef<any>(null);
+
   useEffect(() => {
+    const triggerDebounced = () => {
+      if (funcasDebounceRef.current) clearTimeout(funcasDebounceRef.current);
+      funcasDebounceRef.current = setTimeout(() => {
+        carregarFuncasHome();
+      }, 1000);
+    };
+
     const channel = supabase
       .channel('home-funcas-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'funcas' },
-        () => carregarFuncasHome()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'funca_atribuicoes' },
-        () => carregarFuncasHome()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funcas' }, triggerDebounced)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'funca_atribuicoes' }, triggerDebounced)
       .subscribe();
 
     return () => {
+      if (funcasDebounceRef.current) clearTimeout(funcasDebounceRef.current);
       supabase.removeChannel(channel);
     };
   }, [carregarFuncasHome]);

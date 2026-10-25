@@ -197,3 +197,77 @@ export async function sendBrowserPush(options: PushNotificationOptions): Promise
     return false;
   }
 }
+
+/**
+ * Converte chave pública VAPID de base64url para Uint8Array exigido pelo pushManager.subscribe.
+ */
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+/**
+ * Inscreve o navegador/dispositivo no PushManager do Service Worker e registra
+ * as credenciais criptográficas (VAPID) na tabela public.push_subscriptions do Supabase.
+ */
+export async function subscribeToWebPush(userId: string): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.warn('[WebPush] PushManager ou ServiceWorker não suportado no navegador.');
+    return false;
+  }
+
+  try {
+    const vapidPublicKey =
+      import.meta.env.VITE_VAPID_PUBLIC_KEY ||
+      'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
+
+    const reg = await navigator.serviceWorker.ready;
+    let subscription = await reg.pushManager.getSubscription();
+
+    if (!subscription) {
+      const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: applicationServerKey as unknown as BufferSource,
+      });
+    }
+
+    const subJson = subscription.toJSON();
+    if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) {
+      throw new Error('Inscrição Web Push incompleta retornada pelo navegador.');
+    }
+
+    const { supabase } = await import('../lib/supabaseClient');
+    const { error: upsertErr } = await supabase
+      .from('push_subscriptions')
+      .upsert(
+        {
+          user_id: userId,
+          endpoint: subJson.endpoint,
+          p256dh: subJson.keys.p256dh,
+          auth: subJson.keys.auth,
+          user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 255) : null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'endpoint' }
+      );
+
+    if (upsertErr) {
+      console.warn('[WebPush] Falha ao salvar push_subscription no Supabase:', upsertErr);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('[WebPush] Erro ao registrar inscrição Web Push:', err);
+    return false;
+  }
+}
+

@@ -40,7 +40,7 @@ export async function comprimirFotoPerfil(file: File): Promise<string> {
 
 /**
  * Realiza upload da foto comprimida para o bucket público 'avatars' no Supabase Storage.
- * Em caso de indisponibilidade momentânea do bucket, utiliza fallback resiliente para Data URL base64.
+ * Garante cacheControl de 7 dias e proíbe gravação de Base64 no banco.
  */
 export async function uploadFotoPerfilStorage(
   userId: string,
@@ -52,23 +52,31 @@ export async function uploadFotoPerfilStorage(
     const resBlob = await (await fetch(compressedDataUrl)).blob();
     const { error: uploadError } = await supabase.storage
       .from('avatars')
-      .upload(fileName, resBlob, { contentType: 'image/jpeg', upsert: true });
+      .upload(fileName, resBlob, {
+        contentType: 'image/jpeg',
+        cacheControl: '604800',
+        upsert: true,
+      });
 
-    if (!uploadError) {
-      const { data: publicUrlData } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(fileName);
-
-      if (publicUrlData?.publicUrl) {
-        return publicUrlData.publicUrl;
-      }
+    if (uploadError) {
+      throw uploadError;
     }
-  } catch (err) {
-    console.warn('[AvatarService] Supabase Storage indisponível, usando fallback base64:', err);
+
+    const { data: publicUrlData } = supabase.storage
+      .from('avatars')
+      .getPublicUrl(fileName);
+
+    if (publicUrlData?.publicUrl) {
+      return publicUrlData.publicUrl;
+    }
+  } catch (err: any) {
+    console.error('[AvatarService] Erro no upload para Supabase Storage:', err);
+    throw new Error(
+      `Não foi possível salvar o avatar no servidor (${err.message || 'Erro no Storage'}). Tente novamente.`
+    );
   }
 
-  // Fallback resiliente
-  return compressedDataUrl;
+  throw new Error('Não foi possível obter a URL do avatar salvo.');
 }
 
 /**

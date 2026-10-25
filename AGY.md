@@ -426,10 +426,13 @@ classDiagram
      - `UPDATE`: Administrador pode atualizar qualquer perfil (`public.is_admin()`); morador comum atualiza apenas seus próprios dados cadastrais permitidos (apelido, nome, quarto, avatar_url). Gatilho de segurança `trg_protect_profile_roles` (`public.protect_profile_roles()`) impede estritamente que não-administradores alterem as colunas `ativo`, `role` e `geracao` (blindando a hierarquia Veterano -> Bixo nas Funças).
      - `DELETE`: Exclusivo do Administrador (`public.is_admin()`).
    * **`ROOMS`:** Leitura pública (`anon` e `authenticated`) para permitir a listagem de quartos no fluxo de cadastro de novo morador e seleção de quarto no perfil.
-   * **Foto de Perfil & Supabase Storage (`avatars`):**
-     - Bucket público `avatars` no Supabase Storage.
-     - Políticas RLS em `storage.objects`: `SELECT` público; `INSERT`, `UPDATE` e `DELETE` restritos ao titular autenticado (`name LIKE 'avatar_' || auth.uid() || '_%'`) ou Administradores (`public.is_admin()`).
-     - Compressão inteligente no cliente (center crop 512x512 JPEG 85%) para economia de dados e carregamento instantâneo no mobile, com fallback resiliente para Data URL base64.
+   * **Mídias & Supabase Storage (`avatars`, `pontos_bagunca`, `funcas`, `faxina`):**
+     - Buckets públicos `avatars`, `pontos_bagunca`, `funcas` e `faxina` no Supabase Storage.
+     - Políticas RLS em `storage.objects`: `SELECT` público; `INSERT`, `UPDATE` e `DELETE` restritos ao titular autenticado ou moradores ativos (`public.is_active_member()`) e Administradores (`public.is_admin()`).
+     - Utilitário unificado `imageStorage.ts` com compressão inteligente no cliente (Canvas WebP `800px` ~50KB) com `cacheControl: 604800` (7 dias de cache HTTP no navegador), proibindo estritamente a gravação de strings Base64 nas colunas do banco de dados para proteção de Egress.
+   * **Notificações Server-Driven & Web Push (`notifications` e `push_subscriptions`):**
+     - Tabela `public.notifications`: Caixa de entrada indexada com TTL (`expires_at` padrão de 30 dias), idempotência (`UNIQUE(user_id, event_key)`), RLS estrito (`user_id = auth.uid()`) e limpeza diária noturna às 03:00 via `pg_cron` (`limpar_notificacoes_antigas`).
+     - Tabela `public.push_subscriptions`: Inscrições de aparelhos para Web Push (VAPID RFC 8030), com envio em lote pela Edge Function `send-push` e recepção em segundo plano pelo Service Worker (`public/push-sw.js`), alertando o celular mesmo com o aplicativo fechado.
    * **Tela "Meu Perfil & Quarto" (`MeuPerfilScreen.tsx`):** Acessível pela aba `Casa` e clicando no cabeçalho `02X · Quarto Y` da `Home`. Permite ao morador ativo configurar/remover sua Foto de Perfil, editar seu Apelido na Rep, Nome Completo e Quarto Atual (`quarto_id`), mantendo a Geração travada para morador comum (editável apenas por Administradores).
    * **Central de Gestão de Membros da Casa (`AprovacoesScreen.tsx`):** Exclusiva para Administradores, com 3 abas operacionais com fotos dos membros:
      - **Pendentes (`ativo = false`):** Aprovação (`ativo = true`) e recusa (`DELETE`) de novos moradores.

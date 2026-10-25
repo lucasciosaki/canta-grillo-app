@@ -21,47 +21,7 @@ interface NovaFuncaModalProps {
   initialFrontId?: string | null;
 }
 
-/** Comprime imagem no cliente para evitar uploads pesados (max 1024px e qualidade 0.75) */
-async function comprimirImagemParaDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1024;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(e.target?.result as string);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
-      };
-      img.onerror = reject;
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+import { uploadImageToBucket } from '../../utils/imageStorage';
 
 export const NovaFuncaModal: React.FC<NovaFuncaModalProps> = ({
   isOpen,
@@ -175,27 +135,14 @@ export const NovaFuncaModal: React.FC<NovaFuncaModalProps> = ({
       let fotoUrlParaSalvar: string | null = null;
 
       if (fotoFile) {
-        const compressed = await comprimirImagemParaDataUrl(fotoFile);
-        fotoUrlParaSalvar = compressed;
-
-        try {
-          const fileName = `funca_${user.id}_${Date.now()}.jpg`;
-          const resBlob = await (await fetch(compressed)).blob();
-          const { error: uploadError } = await supabase.storage
-            .from('funcas')
-            .upload(fileName, resBlob, { contentType: 'image/jpeg' });
-
-          if (!uploadError) {
-            const { data: publicUrlData } = supabase.storage
-              .from('funcas')
-              .getPublicUrl(fileName);
-            if (publicUrlData?.publicUrl) {
-              fotoUrlParaSalvar = publicUrlData.publicUrl;
-            }
-          }
-        } catch {
-          // Fallback silencioso para base64
-        }
+        fotoUrlParaSalvar = await uploadImageToBucket({
+          bucket: 'funcas',
+          userId: user.id,
+          prefix: 'funca',
+          file: fotoFile,
+          maxDim: 800,
+          quality: 0.72,
+        });
       }
 
       // 1. Insere a Funça (sempre com status 'aberta' - ciclo manual em 3 etapas)

@@ -81,46 +81,7 @@ function getAreaIcon(nomeArea: string) {
   }
 }
 
-/** Comprime imagem no cliente para evitar uploads pesados (max 1024px e qualidade 0.75) */
-async function comprimirImagemParaDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1024;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          return resolve(e.target?.result as string);
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
-      };
-      img.onerror = reject;
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+import { uploadImageToBucket } from '../../utils/imageStorage';
 
 export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }) => {
   const { user, profile } = useAuth();
@@ -140,6 +101,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   const [fiscalDecisao, setFiscalDecisao] = useState<'aprovado' | 'reprovado' | null>(null);
   const [fiscalObservacao, setFiscalObservacao] = useState('');
   const [fiscalFotoPreview, setFiscalFotoPreview] = useState<string | null>(null);
+  const [fiscalFotoFile, setFiscalFotoFile] = useState<File | null>(null);
   const [enviandoFiscal, setEnviandoFiscal] = useState(false);
   const fiscalFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -415,11 +377,19 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
 
     try {
       setUploading(true);
-      const dataUrl = await comprimirImagemParaDataUrl(file);
 
       if (!minhaEscala || !user) {
         throw new Error('Você não está escalado em nenhum quarto nesta semana.');
       }
+
+      const photoUrl = await uploadImageToBucket({
+        bucket: 'faxina',
+        userId: user.id,
+        prefix: 'faxina',
+        file,
+        maxDim: 800,
+        quality: 0.72,
+      });
 
       const hojeStr = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'America/Sao_Paulo',
@@ -442,7 +412,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
             ano,
             data: hojeStr,
             status: 'cumprido',
-            fotos_comprovacao: [dataUrl],
+            fotos_comprovacao: [photoUrl],
             enviado_em: new Date().toISOString(),
             registrado_por: user.id,
             fiscal_status: 'pendente',
@@ -469,13 +439,27 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     try {
       setEnviandoFiscal(true);
 
+      let finalFiscalFotoUrl: string | null = null;
+      if (fiscalFotoFile) {
+        finalFiscalFotoUrl = await uploadImageToBucket({
+          bucket: 'faxina',
+          userId: user.id,
+          prefix: 'contraprova',
+          file: fiscalFotoFile,
+          maxDim: 800,
+          quality: 0.72,
+        });
+      } else if (fiscalFotoPreview && fiscalFotoPreview.startsWith('http')) {
+        finalFiscalFotoUrl = fiscalFotoPreview;
+      }
+
       // Update direto no Supabase: o trigger trg_validate_and_apply_faxina_rules valida se auth.uid()
       // pertence ao quarto do Halls (ou Admin) e trg_faxina_reprovado_falta incrementa a falta se reprovado.
       const { error: updateErr } = await supabase
         .from('registro_diario_faxina')
         .update({
           fiscal_status: fiscalDecisao,
-          fiscal_foto_url: fiscalFotoPreview || null,
+          fiscal_foto_url: finalFiscalFotoUrl,
           fiscal_observacao: fiscalObservacao.trim() || null,
           fiscalizado_em: new Date().toISOString(),
           fiscalizado_por: user.id,
@@ -492,6 +476,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       setFiscalDecisao(null);
       setFiscalObservacao('');
       setFiscalFotoPreview(null);
+      setFiscalFotoFile(null);
       await carregarQuadro();
     } catch (err: any) {
       alert(err.message || 'Erro ao fiscalizar.');
@@ -1324,11 +1309,11 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                     type="file"
                     accept="image/*"
                     capture="environment"
-                    onChange={async (e) => {
+                    onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (file) {
-                        const d = await comprimirImagemParaDataUrl(file);
-                        setFiscalFotoPreview(d);
+                        setFiscalFotoFile(file);
+                        setFiscalFotoPreview(URL.createObjectURL(file));
                       }
                     }}
                     className="hidden"
@@ -1338,7 +1323,10 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                       <img src={fiscalFotoPreview} alt="Contraprova" className="w-full h-full object-cover" />
                       <button
                         type="button"
-                        onClick={() => setFiscalFotoPreview(null)}
+                        onClick={() => {
+                          setFiscalFotoPreview(null);
+                          setFiscalFotoFile(null);
+                        }}
                         className="absolute top-2 right-2 p-1 rounded-full bg-ink/70 text-white"
                       >
                         <X className="w-3.5 h-3.5" />

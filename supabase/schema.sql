@@ -2022,23 +2022,35 @@ BEGIN
 END $$;
 
 -- ==============================================================================
--- 10. BUCKET DE AVATARS E POLÍTICAS RLS (Supabase Storage)
+-- 10. BUCKETS DE STORAGE E POLÍTICAS RLS (Supabase Storage)
 -- ==============================================================================
 
--- 1. Criação do bucket público de fotos de perfil (avatars)
+-- 1. Criação dos buckets públicos no Supabase Storage
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('pontos_bagunca', 'pontos_bagunca', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('funcas', 'funcas', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('faxina', 'faxina', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
 -- 2. Nota: storage.objects já possui Row Level Security (RLS) habilitado nativamente
 -- no Supabase (sob propriedade de supabase_storage_admin). Não executar ALTER TABLE aqui.
 
--- 3. Leitura pública de fotos de perfil
+-- 3. Leitura pública de fotos de perfil e mídias
 DROP POLICY IF EXISTS "Avatars sao publicamente acessiveis" ON storage.objects;
 CREATE POLICY "Avatars sao publicamente acessiveis"
 ON storage.objects FOR SELECT
 TO anon, authenticated
-USING (bucket_id = 'avatars');
+USING (bucket_id IN ('avatars', 'pontos_bagunca', 'funcas', 'faxina'));
 
 -- 4. Morador autenticado pode fazer upload apenas do seu próprio avatar (ou Admin pode fazer upload de qualquer um)
 DROP POLICY IF EXISTS "Usuarios autenticados podem fazer upload do seu proprio avatar" ON storage.objects;
@@ -2054,7 +2066,17 @@ WITH CHECK (
   )
 );
 
--- 5. Morador autenticado pode atualizar seu próprio avatar (ou Admin pode atualizar)
+-- 5. Upload seguro de fotos em pontos_bagunca, funcas e faxina para moradores ativos
+DROP POLICY IF EXISTS "Moradores ativos podem fazer upload de midias" ON storage.objects;
+CREATE POLICY "Moradores ativos podem fazer upload de midias"
+ON storage.objects FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
+  AND (public.is_active_member() OR public.is_admin())
+);
+
+-- 6. Morador autenticado pode atualizar seu próprio avatar (ou Admin pode atualizar)
 DROP POLICY IF EXISTS "Usuarios autenticados podem atualizar seu proprio avatar" ON storage.objects;
 CREATE POLICY "Usuarios autenticados podem atualizar seu proprio avatar"
 ON storage.objects FOR UPDATE
@@ -2068,7 +2090,16 @@ USING (
   )
 );
 
--- 6. Morador autenticado pode deletar seu próprio avatar (ou Admin pode deletar)
+DROP POLICY IF EXISTS "Moradores ativos podem atualizar suas midias" ON storage.objects;
+CREATE POLICY "Moradores ativos podem atualizar suas midias"
+ON storage.objects FOR UPDATE
+TO authenticated
+USING (
+  bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
+  AND (public.is_active_member() OR public.is_admin())
+);
+
+-- 7. Morador autenticado pode deletar seu próprio avatar (ou Admin pode deletar)
 DROP POLICY IF EXISTS "Usuarios autenticados podem deletar seu proprio avatar" ON storage.objects;
 CREATE POLICY "Usuarios autenticados podem deletar seu proprio avatar"
 ON storage.objects FOR DELETE
@@ -2082,8 +2113,101 @@ USING (
   )
 );
 
+DROP POLICY IF EXISTS "Moradores ativos podem deletar suas midias" ON storage.objects;
+CREATE POLICY "Moradores ativos podem deletar suas midias"
+ON storage.objects FOR DELETE
+TO authenticated
+USING (
+  bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
+  AND (public.is_active_member() OR public.is_admin())
+);
+
 -- ==============================================================================
--- 11. AGENDAMENTO AUTOMÁTICO DE ROTINAS VIA PG_CRON (SUPABASE NATIVO)
+-- 11. ÍNDICES DE PERFORMANCE E TABELAS DE NOTIFICAÇÃO (SERVER-DRIVEN WEB PUSH)
+-- ==============================================================================
+
+-- 1. Índices compostos de alta performance para diminuir tempo de resposta da API
+CREATE INDEX IF NOT EXISTS idx_daily_meals_data_usuario ON public.daily_meals(data, usuario_id);
+CREATE INDEX IF NOT EXISTS idx_registro_faxina_data_quarto ON public.registro_diario_faxina(data, quarto_id);
+CREATE INDEX IF NOT EXISTS idx_pontos_bagunca_status_created ON public.pontos_bagunca(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mensagens_frente_frente_enviada ON public.mensagens_frente(frente_id, enviada_em DESC);
+
+-- 2. Tabela de Inscrições de Aparelhos para Web Push (VAPID)
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON public.push_subscriptions(user_id);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Morador gerencia suas push_subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Morador gerencia suas push_subscriptions" ON public.push_subscriptions
+FOR ALL TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- 3. Tabela de Notificações Server-Driven com TTL e Idempotência
+CREATE TABLE IF NOT EXISTS public.notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  event_key TEXT,
+  category TEXT NOT NULL,
+  urgency TEXT NOT NULL DEFAULT 'normal',
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  target_screen TEXT NOT NULL DEFAULT 'home',
+  target_params JSONB,
+  read BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '30 days')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_user_event_key ON public.notifications(user_id, event_key) WHERE event_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON public.notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON public.notifications(user_id, read) WHERE read = false;
+
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Morador visualiza e atualiza suas proprias notificacoes" ON public.notifications;
+CREATE POLICY "Morador visualiza e atualiza suas proprias notificacoes" ON public.notifications
+FOR ALL TO authenticated
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+-- 4. Função de Limpeza Automática Noturna de Notificações (TTL)
+CREATE OR REPLACE FUNCTION public.limpar_notificacoes_antigas()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Apaga notificações lidas há mais de 15 dias
+  DELETE FROM public.notifications
+  WHERE read = true AND created_at < (now() - interval '15 days');
+
+  -- Apaga qualquer notificação expirada pelo TTL ou criada há mais de 30 dias
+  DELETE FROM public.notifications
+  WHERE expires_at <= now() OR created_at < (now() - interval '30 days');
+END;
+$$;
+
+-- 5. Higienização de strings Base64 legadas em colunas de texto (proteção de Egress)
+UPDATE public.pontos_bagunca SET foto_url = '/logo.png' WHERE foto_url LIKE 'data:image/%';
+UPDATE public.funcas SET foto_url = NULL WHERE foto_url LIKE 'data:image/%';
+UPDATE public.registro_diario_faxina SET fotos_comprovacao = '[]'::jsonb WHERE fotos_comprovacao::text LIKE '%data:image/%';
+UPDATE public.registro_diario_faxina SET fiscal_foto_url = NULL WHERE fiscal_foto_url LIKE 'data:image/%';
+UPDATE public.profiles SET avatar_url = NULL WHERE avatar_url LIKE 'data:image/%';
+
+-- ==============================================================================
+-- 12. AGENDAMENTO AUTOMÁTICO DE ROTINAS VIA PG_CRON (SUPABASE NATIVO)
 -- ==============================================================================
 DO $$
 BEGIN
@@ -2095,6 +2219,7 @@ BEGIN
       PERFORM cron.unschedule('faxina_corte_diario_01h');
       PERFORM cron.unschedule('faxina_auditoria_fiscal_11h');
       PERFORM cron.unschedule('pontos_bagunca_24h');
+      PERFORM cron.unschedule('limpeza_diaria_notificacoes');
     EXCEPTION WHEN OTHERS THEN
       -- ignora se os jobs ainda não existiam
     END;
@@ -2118,6 +2243,13 @@ BEGIN
       'pontos_bagunca_24h',
       '*/15 * * * *',
       'SELECT public.verificar_penalidades_pontos_24h();'
+    );
+
+    -- 4. Limpeza diária de notificações antigas/expiradas às 03:00 BRT (06:00 UTC)
+    PERFORM cron.schedule(
+      'limpeza_diaria_notificacoes',
+      '0 6 * * *',
+      'SELECT public.limpar_notificacoes_antigas();'
     );
   END IF;
 EXCEPTION WHEN OTHERS THEN

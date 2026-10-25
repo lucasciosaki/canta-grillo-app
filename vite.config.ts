@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 export const workboxConfig = {
   globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+  importScripts: ['/push-sw.js'],
   runtimeCaching: [
     {
       urlPattern: /^https?:\/\/.*\/rest\/v1\/.*/i,
@@ -13,7 +14,7 @@ export const workboxConfig = {
         cacheName: 'supabase-api-cache',
         networkTimeoutSeconds: 4,
         expiration: {
-          maxEntries: 100,
+          maxEntries: 300,
           maxAgeSeconds: 24 * 60 * 60, // 24h
         },
         cacheableResponse: {
