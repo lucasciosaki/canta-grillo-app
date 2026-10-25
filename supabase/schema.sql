@@ -2066,6 +2066,12 @@ WITH CHECK (
   )
 );
 
+-- Helper alias para compatibilidade
+CREATE OR REPLACE FUNCTION public.is_active_member()
+RETURNS BOOLEAN AS $$
+  SELECT public.is_active_morador();
+$$ LANGUAGE sql SECURITY DEFINER;
+
 -- 5. Upload seguro de fotos em pontos_bagunca, funcas e faxina para moradores ativos
 DROP POLICY IF EXISTS "Moradores ativos podem fazer upload de midias" ON storage.objects;
 CREATE POLICY "Moradores ativos podem fazer upload de midias"
@@ -2073,7 +2079,7 @@ ON storage.objects FOR INSERT
 TO authenticated
 WITH CHECK (
   bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
-  AND (public.is_active_member() OR public.is_admin())
+  AND (public.is_active_morador() OR public.is_admin())
 );
 
 -- 6. Morador autenticado pode atualizar seu próprio avatar (ou Admin pode atualizar)
@@ -2096,7 +2102,7 @@ ON storage.objects FOR UPDATE
 TO authenticated
 USING (
   bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
-  AND (public.is_active_member() OR public.is_admin())
+  AND (public.is_active_morador() OR public.is_admin())
 );
 
 -- 7. Morador autenticado pode deletar seu próprio avatar (ou Admin pode deletar)
@@ -2119,7 +2125,7 @@ ON storage.objects FOR DELETE
 TO authenticated
 USING (
   bucket_id IN ('pontos_bagunca', 'funcas', 'faxina')
-  AND (public.is_active_member() OR public.is_admin())
+  AND (public.is_active_morador() OR public.is_admin())
 );
 
 -- ==============================================================================
