@@ -2202,7 +2202,7 @@ $$;
 -- 5. Higienização de strings Base64 legadas em colunas de texto (proteção de Egress)
 UPDATE public.pontos_bagunca SET foto_url = '/logo.png' WHERE foto_url LIKE 'data:image/%';
 UPDATE public.funcas SET foto_url = NULL WHERE foto_url LIKE 'data:image/%';
-UPDATE public.registro_diario_faxina SET fotos_comprovacao = '[]'::jsonb WHERE fotos_comprovacao::text LIKE '%data:image/%';
+UPDATE public.registro_diario_faxina SET fotos_comprovacao = ARRAY[]::text[] WHERE fotos_comprovacao::text LIKE '%data:image/%';
 UPDATE public.registro_diario_faxina SET fiscal_foto_url = NULL WHERE fiscal_foto_url LIKE 'data:image/%';
 UPDATE public.profiles SET avatar_url = NULL WHERE avatar_url LIKE 'data:image/%';
 
