@@ -238,6 +238,9 @@ export async function sendBrowserPush(options: PushNotificationOptions): Promise
   }
 }
 
+export const DEFAULT_VAPID_PUBLIC_KEY =
+  'BM3zVhLUeAUW0fhv1mk_qT7GV9BdvLMHyOSgkdVxW0Ttpadg0bxCuhVMP1spI87twk3blNlQeUPpkwvInGFrLLI';
+
 /**
  * Converte chave pública VAPID de base64url para Uint8Array exigido pelo pushManager.subscribe.
  */
@@ -265,17 +268,36 @@ export async function subscribeToWebPush(userId: string): Promise<boolean> {
 
   try {
     const vapidPublicKey =
-      import.meta.env.VITE_VAPID_PUBLIC_KEY ||
-      'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
+      (import.meta as any).env?.VITE_VAPID_PUBLIC_KEY || DEFAULT_VAPID_PUBLIC_KEY;
 
     const reg = await getOrRegisterServiceWorker(3000);
     if (!reg || !reg.pushManager) {
       return false;
     }
+
+    const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
     let subscription = await reg.pushManager.getSubscription();
 
+    // Se já houver inscrição no navegador, verifica se foi gerada com a chave VAPID atual
+    if (subscription) {
+      const existingKeyBuf = subscription.options?.applicationServerKey;
+      if (existingKeyBuf) {
+        const existingKey = new Uint8Array(existingKeyBuf);
+        const sameKey =
+          existingKey.length === applicationServerKey.length &&
+          existingKey.every((b, i) => b === applicationServerKey[i]);
+        if (!sameKey) {
+          const oldEndpoint = subscription.endpoint;
+          await subscription.unsubscribe().catch(() => {});
+          subscription = null;
+          // Remove o endpoint antigo do banco
+          const { supabase } = await import('../lib/supabaseClient');
+          await supabase.from('push_subscriptions').delete().eq('endpoint', oldEndpoint);
+        }
+      }
+    }
+
     if (!subscription) {
-      const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
       subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: applicationServerKey as unknown as BufferSource,
@@ -314,3 +336,27 @@ export async function subscribeToWebPush(userId: string): Promise<boolean> {
   }
 }
 
+export interface RemoteWebPushRequest {
+  user_ids?: string[];
+  broadcast_except_user_id?: string;
+  title: string;
+  body: string;
+  tag?: string;
+  url?: string;
+}
+
+/**
+ * Aciona a Edge Function `send-push` no Supabase para acordar celulares em segundo plano / tela bloqueada.
+ * Executa de forma não-bloqueante (fire-and-forget) para não atrasar a interface.
+ */
+export async function triggerRemoteWebPush(payload: RemoteWebPushRequest): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const { supabase } = await import('../lib/supabaseClient');
+    await supabase.functions.invoke('send-push', {
+      body: payload,
+    });
+  } catch (err) {
+    console.warn('[WebPush] Falha silenciosa ao acionar send-push remoto:', err);
+  }
+}
