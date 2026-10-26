@@ -2205,7 +2205,330 @@ BEGIN
 END;
 $$;
 
--- 5. Higienização de strings Base64 legadas em colunas de texto (proteção de Egress)
+-- 5. Habilita Realtime na tabela public.notifications
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'notifications'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
+  END IF;
+END $$;
+
+-- 6. Helper e Triggers Automáticos para Geração de Notificações no Banco (Server-Driven)
+CREATE OR REPLACE FUNCTION public.criar_notificacao_sistema(
+  p_user_id UUID,
+  p_event_key TEXT,
+  p_category TEXT,
+  p_urgency TEXT,
+  p_title TEXT,
+  p_message TEXT,
+  p_target_screen TEXT DEFAULT 'home',
+  p_target_params JSONB DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  IF p_user_id IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO public.notifications (
+    user_id, event_key, category, urgency, title, message, target_screen, target_params, read
+  ) VALUES (
+    p_user_id, p_event_key, p_category, p_urgency, p_title, p_message, p_target_screen, p_target_params, false
+  )
+  ON CONFLICT (user_id, event_key) WHERE event_key IS NOT NULL
+  DO UPDATE SET
+    title = EXCLUDED.title,
+    message = EXCLUDED.message,
+    urgency = EXCLUDED.urgency,
+    created_at = now();
+END;
+$$;
+
+-- 6.1 Trigger: Novo Ponto de Bagunça aberto ou Ponto Assumido/Creditado
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_pontos_bagunca()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  r_morador RECORD;
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.status = 'aberta' THEN
+    FOR r_morador IN
+      SELECT id FROM public.profiles
+      WHERE ativo = true
+        AND role IN ('morador', 'admin')
+        AND id <> NEW.relator_id
+    LOOP
+      PERFORM public.criar_notificacao_sistema(
+        r_morador.id,
+        'ponto-novo-' || NEW.id::text,
+        'ponto_bagunca',
+        'normal',
+        '🧹 Novo Ponto de Bagunça',
+        NEW.local_descricao || ' — Abra para ver a foto (prazo de 24h)',
+        'home',
+        jsonb_build_object('pontoId', NEW.id)
+      );
+    END LOOP;
+  END IF;
+
+  IF NEW.status = 'assumida' AND NEW.culpado_id IS NOT NULL AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'assumida') THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.culpado_id,
+      'ponto-creditado-' || NEW.id::text,
+      'ponto_bagunca',
+      'normal',
+      '📌 Ponto Individual Creditado',
+      'Ponto de bagunça assumido/creditado (' || NEW.local_descricao || ').',
+      'home',
+      jsonb_build_object('pontoId', NEW.id)
+    );
+
+    -- Marca os alertas de abertura deste ponto como lidos pois já foi assumido
+    UPDATE public.notifications
+    SET read = true
+    WHERE event_key = 'ponto-novo-' || NEW.id::text;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_pontos_bagunca ON public.pontos_bagunca;
+CREATE TRIGGER trg_notify_pontos_bagunca
+AFTER INSERT OR UPDATE ON public.pontos_bagunca
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_pontos_bagunca();
+
+-- 6.2 Trigger: Marcar notificação como lida quando o morador abre o blur do Ponto de Bagunça
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_ponto_visualizado()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.notifications
+  SET read = true
+  WHERE user_id = NEW.morador_id
+    AND event_key = 'ponto-novo-' || NEW.ponto_id::text;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_ponto_visualizado ON public.pontos_bagunca_visualizacoes;
+CREATE TRIGGER trg_notify_ponto_visualizado
+AFTER INSERT ON public.pontos_bagunca_visualizacoes
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_ponto_visualizado();
+
+-- 6.3 Trigger: Nova mensagem na thread de um Ponto de Bagunça
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_mensagens_ponto_bagunca()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_apelido TEXT;
+  v_local TEXT;
+  r_morador RECORD;
+BEGIN
+  SELECT COALESCE(NULLIF(TRIM(apelido), ''), split_part(nome, ' ', 1), 'Morador')
+  INTO v_apelido
+  FROM public.profiles
+  WHERE id = NEW.autor_id;
+
+  SELECT COALESCE(local_descricao, 'Ponto de Bagunça')
+  INTO v_local
+  FROM public.pontos_bagunca
+  WHERE id = NEW.ponto_bagunca_id;
+
+  FOR r_morador IN
+    SELECT id FROM public.profiles
+    WHERE ativo = true
+      AND role IN ('morador', 'admin')
+      AND id <> NEW.autor_id
+  LOOP
+    PERFORM public.criar_notificacao_sistema(
+      r_morador.id,
+      'ponto-msg-' || NEW.id::text,
+      'ponto_bagunca',
+      'normal',
+      '💬 Discussão em Ponto (' || COALESCE(v_apelido, 'Morador') || ')',
+      'Em "' || COALESCE(v_local, 'Ponto') || '": ' || NEW.conteudo,
+      'home',
+      jsonb_build_object('pontoId', NEW.ponto_bagunca_id)
+    );
+  END LOOP;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_mensagens_ponto_bagunca ON public.mensagens_ponto_bagunca;
+CREATE TRIGGER trg_notify_mensagens_ponto_bagunca
+AFTER INSERT ON public.mensagens_ponto_bagunca
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_mensagens_ponto_bagunca();
+
+-- 6.4 Trigger: Nova mensagem no Chat Interno da Frente
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_mensagens_frente()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_apelido TEXT;
+  v_frente_nome TEXT;
+  r_membro RECORD;
+BEGIN
+  SELECT COALESCE(NULLIF(TRIM(apelido), ''), split_part(nome, ' ', 1), 'Morador')
+  INTO v_apelido
+  FROM public.profiles
+  WHERE id = NEW.autor_id;
+
+  SELECT COALESCE(nome, 'Frente')
+  INTO v_frente_nome
+  FROM public.fronts
+  WHERE id = NEW.frente_id;
+
+  FOR r_membro IN
+    SELECT DISTINCT profile_id
+    FROM public.front_members
+    WHERE front_id = NEW.frente_id
+      AND profile_id <> NEW.autor_id
+  LOOP
+    PERFORM public.criar_notificacao_sistema(
+      r_membro.profile_id,
+      'frente-msg-' || NEW.id::text,
+      'chat_frente',
+      'normal',
+      '💬 ' || COALESCE(v_frente_nome, 'Frente') || ' (' || COALESCE(v_apelido, 'Morador') || ')',
+      NEW.conteudo,
+      'frentes',
+      jsonb_build_object('frenteId', NEW.frente_id)
+    );
+  END LOOP;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_mensagens_frente ON public.mensagens_frente;
+CREATE TRIGGER trg_notify_mensagens_frente
+AFTER INSERT ON public.mensagens_frente
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_mensagens_frente();
+
+-- 6.5 Trigger: Funças e Atribuições / Pedidos de Troca
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_funca_atribuicoes()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_titulo TEXT;
+  v_solicitante TEXT;
+BEGIN
+  SELECT COALESCE(titulo, 'Funça') INTO v_titulo FROM public.funcas WHERE id = NEW.funca_id;
+
+  IF TG_OP = 'INSERT' AND NEW.morador_id IS NOT NULL AND (NEW.atribuido_por IS NULL OR NEW.morador_id <> NEW.atribuido_por) THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.morador_id,
+      'funca-atribuida-' || NEW.funca_id::text,
+      'funca',
+      'normal',
+      '🛠️ Nova Funça Atribuída',
+      'Você foi escalado para a funça "' || COALESCE(v_titulo, 'Funça') || '".',
+      'funcas',
+      jsonb_build_object('funcaId', NEW.funca_id)
+    );
+  END IF;
+
+  IF NEW.troca_solicitada_para IS NOT NULL AND (TG_OP = 'INSERT' OR OLD.troca_solicitada_para IS DISTINCT FROM NEW.troca_solicitada_para) THEN
+    SELECT COALESCE(NULLIF(TRIM(apelido), ''), split_part(nome, ' ', 1), 'Morador')
+    INTO v_solicitante
+    FROM public.profiles
+    WHERE id = NEW.morador_id;
+
+    PERFORM public.criar_notificacao_sistema(
+      NEW.troca_solicitada_para,
+      'funca-troca-' || NEW.funca_id::text,
+      'funca',
+      'urgent',
+      '🔄 Pedido de Troca de Funça',
+      COALESCE(v_solicitante, 'Morador') || ' pediu para trocar a funça "' || COALESCE(v_titulo, 'Funça') || '" com você.',
+      'funcas',
+      jsonb_build_object('funcaId', NEW.funca_id)
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_funca_atribuicoes ON public.funca_atribuicoes;
+CREATE TRIGGER trg_notify_funca_atribuicoes
+AFTER INSERT OR UPDATE ON public.funca_atribuicoes
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_funca_atribuicoes();
+
+-- 6.6 Trigger: Caixas de Cerveja (nova dívida ou solicitação de baixa para Admin)
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_caixas_cerveja()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  r_admin RECORD;
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.status = 'pendente' THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.morador_id,
+      'cerveja-nova-' || NEW.id::text,
+      'cerveja',
+      'normal',
+      '🍺 Nova Caixa de Cerveja Lançada!',
+      '1 caixa devida: ' || NEW.motivo_descricao,
+      'cervejas',
+      jsonb_build_object('caixaId', NEW.id)
+    );
+  END IF;
+
+  IF NEW.status = 'baixa_solicitada' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'baixa_solicitada') THEN
+    FOR r_admin IN
+      SELECT id FROM public.profiles WHERE role = 'admin' AND ativo = true
+    LOOP
+      PERFORM public.criar_notificacao_sistema(
+        r_admin.id,
+        'admin-cerveja-baixa-' || NEW.id::text,
+        'cerveja',
+        'normal',
+        '🍻 Solicitação de Baixa de Cerveja',
+        'Há uma solicitação de baixa de caixa de cerveja aguardando validação.',
+        'cervejas',
+        jsonb_build_object('caixaId', NEW.id)
+      );
+    END LOOP;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_caixas_cerveja ON public.caixas_cerveja;
+CREATE TRIGGER trg_notify_caixas_cerveja
+AFTER INSERT OR UPDATE ON public.caixas_cerveja
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_caixas_cerveja();
+
+-- 7. Higienização de strings Base64 legadas em colunas de texto (proteção de Egress)
 UPDATE public.pontos_bagunca SET foto_url = '/logo.png' WHERE foto_url LIKE 'data:image/%';
 UPDATE public.funcas SET foto_url = NULL WHERE foto_url LIKE 'data:image/%';
 UPDATE public.registro_diario_faxina SET fotos_comprovacao = ARRAY[]::text[] WHERE fotos_comprovacao::text LIKE '%data:image/%';

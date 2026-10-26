@@ -675,15 +675,19 @@ flowchart LR
 - [x] **Central de Notificações In-App (Sino do Header) & Browser Push:**
   - **Sino no Header:** Badge numérico dinâmico em terracota (`bg-clay`) exibindo a contagem real de notificações não lidas.
   - **NotificationsDrawer:** Painel deslizante com abas (`Todas` / `Não lidas`), botão "Marcar todas como lidas", banner para solicitar permissão nativa de notificações, tags de urgência e navegação direta ao clicar no item.
-  - **Motor de Derivação Inteligente no Cliente (`deriveNotifications`):** Avaliação pura, reativa e determinística dos 20 gatilhos oficiais a partir do estado consolidado do Supabase.
+  - **Motor Híbrido (Triggers Server-Driven em `public.notifications` + Derivação no Cliente `deriveNotifications`):**
+    - Gatilhos automáticos (`SECURITY DEFINER`) no PostgreSQL (`public.criar_notificacao_sistema`, `trg_notify_pontos_bagunca`, `trg_notify_ponto_visualizado`, `trg_notify_mensagens_ponto_bagunca`, `trg_notify_mensagens_frente`, `trg_notify_funca_atribuicoes`, `trg_notify_caixas_cerveja`) populam `public.notifications` de forma idempotente (`event_key`) e transmitem via `supabase_realtime` (`filter: user_id=eq.${user.id}`).
+    - Avaliação reativa e determinística dos 20 gatilhos oficiais combinando registros persistidos em `public.notifications` com o estado consolidado do Supabase.
+  - **Web Push Remoto (RFC 8291 `aes128gcm` + VAPID ES256) & Browser Push Local:**
+    - Edge Function `supabase/functions/send-push/index.ts` para entrega de notificações com o PWA fechado/em background usando chaves VAPID e assinaturas em `public.push_subscriptions`.
+    - Disparo local via Service Worker (`showNotification`) com deduplicação persistente em `localStorage` (`canta_grillo_notified_events_v1`).
   - **Agendador Periódico no Cliente (Fuso `America/Sao_Paulo`):** Checagem a cada 60s para disparar pontualmente alertas de horários críticos:
     - **15:00h e 21:00h BRT:** Lembrete da Folha de Misturas (almoço pendente se 0 misturas às 15h, janta pendente se < 1.0 misturas às 21h).
     - **11:00h e 21:00h BRT:** Lembretes de alimentação dos cães na Frente Dogs (manhã às 11h, noite às 21h).
     - **00:00h–00:59h BRT:** Urgência de envio da foto da faxina antes do corte das 01:00h.
     - **10:00h–10:59h BRT:** Urgência de fiscalização do Halls antes do corte das 11:00h.
     - **Prazo $\le 1$h das 24h:** Ponto de bagunça prestes a expirar sem visualização do morador.
-  - **Browser Push Nativo & Deduplicação Persistente:** Disparo via `navigator.serviceWorker.ready` (`showNotification`) com fallback para `new Notification()`, persistindo IDs disparados em `localStorage` (`canta_grillo_notified_events_v1`) para evitar múltiplos pushes repetidos.
-  - **Supabase Realtime Hub Unificado (`realtime_notifications_hub`):** Escuta de eventos em 14 tabelas (`pontos_bagunca`, `mensagens_ponto_bagunca`, `pontos_bagunca_visualizacoes`, `escala_semanal_faxina`, `registro_diario_faxina`, `mensagens_frente`, `front_members`, `funcas`, `funca_atribuicoes`, `solicitacoes_mercado`, `dogs_refeicoes_diarias`, `daily_meals`, `caixas_cerveja`, `profiles`).
+  - **Supabase Realtime Hub Unificado (`realtime_notifications_hub`):** Escuta de eventos em 15 tabelas (incluindo `public.notifications` filtrado por `user_id` para injeção imediata em 0ms).
   - **Suíte de Testes Automatizados:** 100% dos 20 gatilhos cobertos em testes unitários automatizados em `tests/unit/notificacoes-logic.test.mjs`.
 - [x] **Otimização de Service Worker & Cache Offline:**
   - Configuração do Workbox em `vite.config.ts` com `globPatterns` cobrindo assets estáticos (`js`, `css`, `html`, `ico`, `png`, `svg`, `woff2`).

@@ -40,6 +40,7 @@ interface RawTablesCache {
   adminBaixasCount: number;
   msgFrentes: any[];
   mercado: any[];
+  dbNotifications: any[];
 }
 
 const STORAGE_KEY_READ = 'canta_grillo_read_notifications_v1';
@@ -98,7 +99,7 @@ export function useNotifications() {
     return res;
   }, [user?.id]);
 
-  // Marca uma notificação individual como lida
+  // Marca uma notificação individual como lida (memória + localStorage + tabela public.notifications)
   const markAsRead = useCallback((id: string) => {
     setReadIds((prev) => {
       const next = new Set(prev).add(id);
@@ -113,7 +114,22 @@ export function useNotifications() {
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, read: true } : n))
     );
-  }, []);
+
+    if (rawTablesRef.current?.dbNotifications) {
+      rawTablesRef.current.dbNotifications = rawTablesRef.current.dbNotifications.map((row: any) =>
+        row.event_key === id || row.id === id ? { ...row, read: true } : row
+      );
+    }
+
+    if (user?.id) {
+      supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('user_id', user.id)
+        .eq('event_key', id)
+        .then(() => {});
+    }
+  }, [user?.id]);
 
   // Marca todas as notificações atuais como lidas
   const markAllAsRead = useCallback(() => {
@@ -130,7 +146,23 @@ export function useNotifications() {
       });
       return prev.map((n) => ({ ...n, read: true }));
     });
-  }, []);
+
+    if (rawTablesRef.current?.dbNotifications) {
+      rawTablesRef.current.dbNotifications = rawTablesRef.current.dbNotifications.map((row: any) => ({
+        ...row,
+        read: true,
+      }));
+    }
+
+    if (user?.id) {
+      supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('user_id', user.id)
+        .eq('read', false)
+        .then(() => {});
+    }
+  }, [user?.id]);
 
   // Limpa lista de notificações
   const clearAll = useCallback(() => {
@@ -293,6 +325,17 @@ export function useNotifications() {
             })());
           }
         }
+        if (tablesToRefresh!.has('notifications')) {
+          refreshTasks.push((async () => {
+            const { data } = await supabase
+              .from('notifications')
+              .select('id, event_key, category, urgency, title, message, target_screen, target_params, read, created_at')
+              .eq('user_id', user.id)
+              .order('created_at', { ascending: false })
+              .limit(50);
+            if (data) currentRaw.dbNotifications = data || [];
+          })());
+        }
 
         await Promise.all(refreshTasks);
       } else {
@@ -313,6 +356,7 @@ export function useNotifications() {
           caixasRes,
           adminPerfisRes,
           adminBaixasRes,
+          dbNotifsRes,
         ] = await Promise.all([
           getProfilesCached(),
           supabase.from('pontos_bagunca').select('id, relator_id, culpado_id, local_descricao, status, created_at').order('created_at', { ascending: false }),
@@ -329,6 +373,7 @@ export function useNotifications() {
           supabase.from('caixas_cerveja').select('id, motivo_descricao, status').eq('morador_id', user.id),
           isAdmin ? supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('ativo', false) : Promise.resolve({ count: 0 }),
           isAdmin ? supabase.from('caixas_cerveja').select('id', { count: 'exact', head: true }).eq('status', 'baixa_solicitada') : Promise.resolve({ count: 0 }),
+          supabase.from('notifications').select('id, event_key, category, urgency, title, message, target_screen, target_params, read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50),
         ]);
 
         const userFrontIds = Array.from(new Set<string>((meusMembrosRes.data || []).map((m: any) => m.front_id)));
@@ -361,6 +406,7 @@ export function useNotifications() {
           adminBaixasCount: adminBaixasRes.count || 0,
           msgFrentes: msgFrentesRes.data || [],
           mercado: mercadoRes.data || [],
+          dbNotifications: dbNotifsRes.data || [],
         };
       }
 
@@ -604,10 +650,42 @@ export function useNotifications() {
       lastEvaluationContextRef.current = evaluationContext;
 
       const derivadas = deriveNotifications(evaluationContext);
-      setNotifications(derivadas);
+
+      // Mescla com as linhas persistidas na tabela public.notifications (geradas pelos triggers do banco)
+      const mapaMesclado = new Map<string, AppNotification>();
+      derivadas.forEach((n) => {
+        mapaMesclado.set(n.id, n);
+      });
+
+      (currentRaw.dbNotifications || []).forEach((row: any) => {
+        const notifId = row.event_key || row.id;
+        const jaLida = Boolean(row.read) || readIdsRef.current.has(notifId);
+        const existente = mapaMesclado.get(notifId);
+        if (existente) {
+          mapaMesclado.set(notifId, {
+            ...existente,
+            read: existente.read || jaLida,
+          });
+        } else {
+          mapaMesclado.set(notifId, {
+            id: notifId,
+            category: (row.category || 'sistema') as any,
+            urgency: (row.urgency || 'normal') as any,
+            title: row.title,
+            message: row.message,
+            timestamp: row.created_at || agora.toISOString(),
+            read: jaLida,
+            targetScreen: (row.target_screen || 'home') as any,
+            targetParams: row.target_params || undefined,
+          });
+        }
+      });
+
+      const listaFinal = Array.from(mapaMesclado.values());
+      setNotifications(listaFinal);
 
       // Dispara push local para novidades se o app estiver aberto
-      derivadas.forEach((notif) => {
+      listaFinal.forEach((notif) => {
         if (!notif.read && !hasBeenPushed(notif.id)) {
           if (
             notif.urgency === 'urgent' ||
@@ -711,6 +789,7 @@ export function useNotifications() {
         carregarNotificacoes(
           false,
           new Set([
+            'notifications',
             'pontos_bagunca',
             'pontos_bagunca_visualizacoes',
             'mensagens_ponto_bagunca',
@@ -869,9 +948,47 @@ export function useNotifications() {
         invalidateCache('profiles');
         triggerGranularRefresh('profiles');
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => {
-        forceRefresh();
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` },
+        (payload: any) => {
+          if (payload?.eventType === 'INSERT' && payload.new?.user_id === user.id) {
+            const row = payload.new;
+            const notifId = row.event_key || row.id;
+            const novaNotif: AppNotification = {
+              id: notifId,
+              category: (row.category || 'sistema') as any,
+              urgency: (row.urgency || 'normal') as any,
+              title: row.title,
+              message: row.message,
+              timestamp: row.created_at || new Date().toISOString(),
+              read: Boolean(row.read) || readIdsRef.current.has(notifId),
+              targetScreen: (row.target_screen || 'home') as any,
+              targetParams: row.target_params || undefined,
+            };
+
+            setNotifications((prev) => {
+              if (prev.some((n) => n.id === notifId)) return prev;
+              return [novaNotif, ...prev];
+            });
+
+            if (!novaNotif.read) {
+              sendBrowserPush({
+                id: notifId,
+                title: novaNotif.title,
+                body: novaNotif.message,
+                tag: novaNotif.category,
+                url: `/?screen=${novaNotif.targetScreen}`,
+              });
+            }
+
+            if (row.category === 'ponto_bagunca' && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
+            }
+          }
+          triggerGranularRefresh('notifications');
+        }
+      )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           if (hasSubscribedOnce) {
@@ -879,6 +996,7 @@ export function useNotifications() {
             carregarNotificacoes(
               false,
               new Set([
+                'notifications',
                 'pontos_bagunca',
                 'pontos_bagunca_visualizacoes',
                 'mensagens_ponto_bagunca',

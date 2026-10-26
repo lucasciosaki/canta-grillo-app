@@ -8,7 +8,8 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.getRegistration().then((reg) => {
       if (!reg) {
-        navigator.serviceWorker.register('/push-sw.js').catch(() => {
+        const swUrl = import.meta.env.PROD ? '/sw.js' : '/push-sw.js';
+        navigator.serviceWorker.register(swUrl).catch(() => {
           // Ignora silenciosamente se não disponível
         });
       }

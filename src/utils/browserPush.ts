@@ -153,7 +153,7 @@ function unmarkAsPushed(id: string): void {
  * Obtém o ServiceWorkerRegistration ativo ou registra /push-sw.js como fallback
  * (necessário em Android Chrome e ambientes dev/túnel sem bloqueio infinito em .ready).
  */
-async function getOrRegisterServiceWorker(timeoutMs = 2500): Promise<ServiceWorkerRegistration | null> {
+async function getOrRegisterServiceWorker(timeoutMs = 3500): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
     return null;
   }
@@ -161,7 +161,11 @@ async function getOrRegisterServiceWorker(timeoutMs = 2500): Promise<ServiceWork
   try {
     let reg = await navigator.serviceWorker.getRegistration();
     if (!reg) {
-      reg = await navigator.serviceWorker.register('/push-sw.js').catch(() => undefined);
+      const isProd = Boolean((import.meta as any).env?.PROD);
+      const swUrl = isProd ? '/sw.js' : '/push-sw.js';
+      reg = await navigator.serviceWorker.register(swUrl).catch(() =>
+        navigator.serviceWorker.register('/push-sw.js').catch(() => undefined)
+      );
     }
     if (reg && reg.active) {
       return reg;
@@ -172,7 +176,7 @@ async function getOrRegisterServiceWorker(timeoutMs = 2500): Promise<ServiceWork
       new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
     ]);
 
-    return readyReg || reg || null;
+    return readyReg || (reg?.active ? reg : null);
   } catch {
     return null;
   }
