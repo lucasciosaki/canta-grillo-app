@@ -176,17 +176,54 @@ function MainApp() {
 
   // Realtime para pontos de bagunça (visualizações locais não disparam refetch no banco)
   useEffect(() => {
+    let hasSubscribedOnce = false;
+
+    const handleRealtimePontoEvent = (payload?: any) => {
+      if (payload?.eventType === 'INSERT' && payload?.new?.id && payload?.new?.status === 'aberta') {
+        const novo = payload.new;
+        setPontosBagunca((prev) => {
+          if (prev.some((p) => p.id === novo.id)) return prev;
+          return [
+            {
+              ...novo,
+              relator: null,
+              culpado: null,
+            },
+            ...prev,
+          ];
+        });
+        agendarCarregarPontosBagunca(150);
+      } else {
+        agendarCarregarPontosBagunca(600);
+      }
+    };
+
+    const handleCustomPontoEvent = (e: Event) => {
+      const customEvt = e as CustomEvent;
+      handleRealtimePontoEvent(customEvt.detail);
+    };
+
+    window.addEventListener('canta-grillo:ponto-realtime', handleCustomPontoEvent);
+
     const channel = supabase
       .channel('pontos-bagunca-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, () =>
-        agendarCarregarPontosBagunca(800)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, (payload) =>
+        handleRealtimePontoEvent(payload)
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () =>
-        agendarCarregarPontosBagunca(800)
+        agendarCarregarPontosBagunca(600)
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          if (hasSubscribedOnce) {
+            agendarCarregarPontosBagunca(150);
+          }
+          hasSubscribedOnce = true;
+        }
+      });
 
     return () => {
+      window.removeEventListener('canta-grillo:ponto-realtime', handleCustomPontoEvent);
       if (pontosDebounceRef.current) clearTimeout(pontosDebounceRef.current);
       supabase.removeChannel(channel);
     };
@@ -252,6 +289,31 @@ function MainApp() {
   useEffect(() => {
     carregarFuncasHome();
   }, [carregarFuncasHome]);
+
+  // Sincroniza Home automaticamente quando o celular volta do bloqueio de tela ou segundo plano
+  useEffect(() => {
+    let lastWakeupHomeSync = 0;
+    const syncHomeOnWakeup = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastWakeupHomeSync < 2000) return;
+      lastWakeupHomeSync = now;
+      agendarCarregarPontosBagunca(100);
+      carregarFuncasHome();
+    };
+
+    document.addEventListener('visibilitychange', syncHomeOnWakeup);
+    window.addEventListener('focus', syncHomeOnWakeup);
+    window.addEventListener('pageshow', syncHomeOnWakeup);
+    window.addEventListener('online', syncHomeOnWakeup);
+
+    return () => {
+      document.removeEventListener('visibilitychange', syncHomeOnWakeup);
+      window.removeEventListener('focus', syncHomeOnWakeup);
+      window.removeEventListener('pageshow', syncHomeOnWakeup);
+      window.removeEventListener('online', syncHomeOnWakeup);
+    };
+  }, [agendarCarregarPontosBagunca, carregarFuncasHome]);
 
   const funcasDebounceRef = useRef<any>(null);
 

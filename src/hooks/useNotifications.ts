@@ -693,17 +693,45 @@ export function useNotifications() {
     }
   }, []);
 
-  // Auto-refresh quando a página voltar do segundo plano ou reconectar
+  // Auto-refresh quando a página voltar do segundo plano, ganhar foco no celular ou reconectar
   useEffect(() => {
     let lastHiddenTime = 0;
+    let lastWakeSyncTime = 0;
+
+    const syncOnWakeup = () => {
+      const now = Date.now();
+      if (now - lastWakeSyncTime < 2000) return;
+      lastWakeSyncTime = now;
+
+      // Se ficou mais de 2 minutos em segundo plano, sincroniza tudo do banco
+      if (lastHiddenTime > 0 && now - lastHiddenTime > 120_000) {
+        forceRefresh();
+      } else {
+        // Sincronização leve e imediata das tabelas dinâmicas críticas no mobile
+        carregarNotificacoes(
+          false,
+          new Set([
+            'pontos_bagunca',
+            'pontos_bagunca_visualizacoes',
+            'mensagens_ponto_bagunca',
+            'mensagens_frente',
+            'funcas',
+          ])
+        );
+      }
+    };
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         lastHiddenTime = Date.now();
       } else if (document.visibilityState === 'visible') {
-        // Se ficou mais de 2 minutos em segundo plano, sincroniza tudo do banco
-        if (lastHiddenTime > 0 && Date.now() - lastHiddenTime > 120_000) {
-          forceRefresh();
-        }
+        syncOnWakeup();
+      }
+    };
+
+    const handleFocusOrPageShow = () => {
+      if (document.visibilityState === 'visible') {
+        syncOnWakeup();
       }
     };
 
@@ -712,26 +740,92 @@ export function useNotifications() {
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocusOrPageShow);
+    window.addEventListener('pageshow', handleFocusOrPageShow);
     window.addEventListener('online', handleOnline);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocusOrPageShow);
+      window.removeEventListener('pageshow', handleFocusOrPageShow);
       window.removeEventListener('online', handleOnline);
     };
-  }, [forceRefresh]);
+  }, [forceRefresh, carregarNotificacoes]);
 
   // Escuta unificada via Supabase Realtime com sincronização cirúrgica por tabela
   useEffect(() => {
     if (!user?.id) return;
 
+    let hasSubscribedOnce = false;
+
     const channel = supabase
       .channel('realtime_notifications_hub')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, () =>
-        triggerGranularRefresh('pontos_bagunca')
-      )
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () =>
-        triggerGranularRefresh('mensagens_ponto_bagunca')
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, (payload: any) => {
+        if (payload?.eventType === 'INSERT' && payload.new?.id) {
+          const novoPonto = payload.new;
+
+          // 1. Atualização otimista imediata (0ms) na memória do sino de notificações
+          if (rawTablesRef.current) {
+            const jaExiste = rawTablesRef.current.pontos.some((p: any) => p.id === novoPonto.id);
+            if (!jaExiste) {
+              rawTablesRef.current.pontos = [novoPonto, ...rawTablesRef.current.pontos];
+            }
+          }
+          if (lastEvaluationContextRef.current) {
+            const listaAtual = lastEvaluationContextRef.current.pontosBagunca || [];
+            if (!listaAtual.some((p) => p.id === novoPonto.id)) {
+              lastEvaluationContextRef.current.pontosBagunca = [
+                {
+                  id: novoPonto.id,
+                  relator_id: novoPonto.relator_id,
+                  culpado_id: novoPonto.culpado_id,
+                  local_descricao: novoPonto.local_descricao,
+                  status: novoPonto.status,
+                  created_at: novoPonto.created_at || new Date().toISOString(),
+                },
+                ...listaAtual,
+              ];
+              const atualizado = deriveNotifications({
+                ...lastEvaluationContextRef.current,
+                agora: new Date(),
+                readNotificationIds: readIdsRef.current,
+              });
+              setNotifications(atualizado);
+            }
+          }
+
+          // 2. Disparo imediato de Browser Push nativo para outros moradores
+          if (novoPonto.status === 'aberta' && novoPonto.relator_id !== user.id) {
+            sendBrowserPush({
+              id: `ponto-novo-${novoPonto.id}`,
+              title: '🧹 Novo Ponto de Bagunça',
+              body: `${novoPonto.local_descricao || 'Bagunça relatada'} — Abra para ver a foto (prazo de 24h)`,
+              tag: 'ponto_bagunca',
+              url: '/?screen=home',
+            });
+          }
+        }
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
+        }
+        triggerGranularRefresh('pontos_bagunca');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, (payload: any) => {
+        if (payload?.eventType === 'INSERT' && payload.new?.id && payload.new?.autor_id !== user.id) {
+          sendBrowserPush({
+            id: `ponto-msg-${payload.new.id}`,
+            title: '💬 Nova mensagem no Ponto de Bagunça',
+            body: payload.new.conteudo || 'Nova mensagem na discussão',
+            tag: 'ponto_bagunca',
+            url: '/?screen=home',
+          });
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
+        }
+        triggerGranularRefresh('mensagens_ponto_bagunca');
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, () =>
         triggerGranularRefresh('escala_semanal_faxina')
       )
@@ -778,7 +872,24 @@ export function useNotifications() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => {
         forceRefresh();
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          if (hasSubscribedOnce) {
+            // Reconectou após queda de WebSocket no mobile: sincroniza tabelas críticas
+            carregarNotificacoes(
+              false,
+              new Set([
+                'pontos_bagunca',
+                'pontos_bagunca_visualizacoes',
+                'mensagens_ponto_bagunca',
+                'mensagens_frente',
+                'funcas',
+              ])
+            );
+          }
+          hasSubscribedOnce = true;
+        }
+      });
 
     return () => {
       if (debounceTimerRef.current) {
@@ -786,7 +897,7 @@ export function useNotifications() {
       }
       supabase.removeChannel(channel);
     };
-  }, [user?.id, triggerGranularRefresh, forceRefresh]);
+  }, [user?.id, triggerGranularRefresh, forceRefresh, carregarNotificacoes]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 

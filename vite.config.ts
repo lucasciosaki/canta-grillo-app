@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export const workboxConfig = {
+  skipWaiting: true,
+  clientsClaim: true,
   globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
   importScripts: ['/push-sw.js'],
   runtimeCaching: [

@@ -106,4 +106,33 @@ describe('Unit Tests: Session Cache, Deduplication & Request Reduction', () => {
       assert.ok(content.includes('isRefreshing'), 'NotificationsDrawer deve receber isRefreshing');
     });
   });
+
+  describe('5. Sincronização Mobile em Segundo Plano, Reconexão Realtime e Browser Push', () => {
+    it('AuthContext.tsx deve sincronizar o JWT no Realtime via supabase.realtime.setAuth', () => {
+      const authFile = path.join(rootDir, 'src/contexts/AuthContext.tsx');
+      const content = fs.readFileSync(authFile, 'utf-8');
+      assert.ok(
+        content.includes('supabase.realtime.setAuth('),
+        'AuthContext deve autenticar o socket Realtime com o access_token do morador'
+      );
+    });
+
+    it('App.tsx e useNotifications.ts devem sincronizar ao retornar do bloqueio de tela no celular (visibilitychange, focus, pageshow)', () => {
+      const appContent = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf-8');
+      const notifContent = fs.readFileSync(path.join(rootDir, 'src/hooks/useNotifications.ts'), 'utf-8');
+
+      assert.ok(appContent.includes("addEventListener('visibilitychange'"), 'App.tsx deve escutar visibilitychange');
+      assert.ok(appContent.includes("addEventListener('pageshow'"), 'App.tsx deve escutar pageshow');
+      assert.ok(appContent.includes('canta-grillo:ponto-realtime'), 'App.tsx deve escutar evento customizado de ponto realtime');
+
+      assert.ok(notifContent.includes("addEventListener('pageshow'"), 'useNotifications.ts deve escutar pageshow');
+      assert.ok(notifContent.includes('ponto-novo-${novoPonto.id}'), 'useNotifications.ts deve disparar push imediato no INSERT de pontos_bagunca');
+    });
+
+    it('browserPush.ts deve usar getOrRegisterServiceWorker com timeout para não travar no Android/iOS', () => {
+      const pushContent = fs.readFileSync(path.join(rootDir, 'src/utils/browserPush.ts'), 'utf-8');
+      assert.ok(pushContent.includes('getOrRegisterServiceWorker'), 'deve usar helper resiliente de ServiceWorker');
+      assert.ok(pushContent.includes("register('/push-sw.js')"), 'deve registrar /push-sw.js como fallback se ausente');
+    });
+  });
 });

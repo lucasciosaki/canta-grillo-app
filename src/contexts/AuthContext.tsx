@@ -95,6 +95,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!isMounted) return;
       if (session?.user) {
+        if (session.access_token) {
+          supabase.realtime.setAuth(session.access_token);
+        }
         currentProfileUserIdRef.current = session.user.id;
         await fetchProfile(session.user.id, session.user);
         setSession(session);
@@ -112,6 +115,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!isMounted) return;
+
+      if (newSession?.access_token) {
+        supabase.realtime.setAuth(newSession.access_token);
+      }
 
       if (event === 'INITIAL_SESSION') {
         // Já tratado pelo getSession acima

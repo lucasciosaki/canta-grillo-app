@@ -139,6 +139,46 @@ export function prunePushedEvents(maxAgeDays = 7): void {
 }
 
 /**
+ * Remove um evento específico do mapa de notificados (caso o disparo falhe).
+ */
+function unmarkAsPushed(id: string): void {
+  const map = getNotifiedEventsMap();
+  if (map[id]) {
+    delete map[id];
+    saveNotifiedEventsMap(map);
+  }
+}
+
+/**
+ * Obtém o ServiceWorkerRegistration ativo ou registra /push-sw.js como fallback
+ * (necessário em Android Chrome e ambientes dev/túnel sem bloqueio infinito em .ready).
+ */
+async function getOrRegisterServiceWorker(timeoutMs = 2500): Promise<ServiceWorkerRegistration | null> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return null;
+  }
+
+  try {
+    let reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) {
+      reg = await navigator.serviceWorker.register('/push-sw.js').catch(() => undefined);
+    }
+    if (reg && reg.active) {
+      return reg;
+    }
+
+    const readyReg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+
+    return readyReg || reg || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Dispara uma notificação nativa do navegador (Browser Push).
  * Garante deduplicação persistente via localStorage antes de acionar.
  */
@@ -159,25 +199,24 @@ export async function sendBrowserPush(options: PushNotificationOptions): Promise
   markAsPushed(id);
 
   try {
-    // Tenta via Service Worker registration (ideal em PWA Android/iOS)
-    if ('serviceWorker' in navigator) {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && reg.showNotification) {
-        await reg.showNotification(title, {
-          body,
-          icon,
-          badge,
-          tag: tag || id,
-          data: { url: url || '/' },
-        });
-        return true;
-      }
+    // Tenta via Service Worker registration (obrigatório em PWA Android/iOS)
+    const reg = await getOrRegisterServiceWorker(2500);
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(title, {
+        body,
+        icon,
+        badge,
+        tag: tag || id,
+        vibrate: [100, 50, 100],
+        data: { url: url || '/' },
+      } as NotificationOptions);
+      return true;
     }
   } catch (swErr) {
     console.warn('[BrowserPush] Falha ao disparar via ServiceWorker, tentando fallback direto:', swErr);
   }
 
-  // Fallback: Construtor clássico Notification
+  // Fallback: Construtor clássico Notification (Desktop / navegadores compatíveis)
   try {
     const notif = new Notification(title, {
       body,
@@ -193,6 +232,7 @@ export async function sendBrowserPush(options: PushNotificationOptions): Promise
     }
     return true;
   } catch (fallbackErr) {
+    unmarkAsPushed(id);
     console.error('[BrowserPush] Falha ao disparar notificação via Notification API:', fallbackErr);
     return false;
   }
@@ -228,7 +268,10 @@ export async function subscribeToWebPush(userId: string): Promise<boolean> {
       import.meta.env.VITE_VAPID_PUBLIC_KEY ||
       'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
 
-    const reg = await navigator.serviceWorker.ready;
+    const reg = await getOrRegisterServiceWorker(3000);
+    if (!reg || !reg.pushManager) {
+      return false;
+    }
     let subscription = await reg.pushManager.getSubscription();
 
     if (!subscription) {
