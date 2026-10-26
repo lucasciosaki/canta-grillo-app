@@ -3,6 +3,14 @@
 
 self.addEventListener('push', (event) => {
   if (!event.data) {
+    event.waitUntil(
+      self.registration.showNotification('República Canta Grillo', {
+        body: 'Você tem uma nova atualização na república.',
+        icon: '/logo.png',
+        badge: '/logo.png',
+        data: { url: '/' },
+      })
+    );
     return;
   }
 
@@ -13,7 +21,8 @@ self.addEventListener('push', (event) => {
       body: payload.body || 'Você tem uma nova notificação.',
       icon: payload.icon || '/logo.png',
       badge: payload.badge || '/logo.png',
-      tag: payload.tag || 'canta-grillo-general',
+      tag: payload.tag || 'canta-grillo-' + Date.now(),
+      renotify: true,
       vibrate: [100, 50, 100],
       data: {
         url: payload.url || '/',
@@ -28,6 +37,7 @@ self.addEventListener('push', (event) => {
       self.registration.showNotification('República Canta Grillo', {
         body: text,
         icon: '/logo.png',
+        badge: '/logo.png',
         data: { url: '/' },
       })
     );

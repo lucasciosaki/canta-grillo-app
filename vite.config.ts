@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -78,6 +80,28 @@ export default defineConfig({
           }
         ]
       }
-    })
+    }),
+    {
+      name: 'prepend-synchronous-push-sw',
+      apply: 'build',
+      enforce: 'post',
+      closeBundle() {
+        try {
+          const swPath = path.resolve('dist/sw.js')
+          const pushSwPath = path.resolve('public/push-sw.js')
+          if (fs.existsSync(swPath) && fs.existsSync(pushSwPath)) {
+            const pushCode = fs.readFileSync(pushSwPath, 'utf-8')
+            let swCode = fs.readFileSync(swPath, 'utf-8')
+            // Remove importScripts("/push-sw.js") de dentro do wrapper assíncrono do Workbox
+            swCode = swCode.replace(/importScripts\(["']\/push-sw\.js["']\),?/g, '')
+            if (!swCode.includes("self.addEventListener('push'")) {
+              fs.writeFileSync(swPath, `${pushCode}\n${swCode}`, 'utf-8')
+            }
+          }
+        } catch (err) {
+          console.warn('[prepend-synchronous-push-sw] Aviso ao injetar push-sw no topo de sw.js:', err)
+        }
+      }
+    }
   ],
 })

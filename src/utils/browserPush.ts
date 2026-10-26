@@ -357,10 +357,14 @@ export async function triggerRemoteWebPush(payload: RemoteWebPushRequest): Promi
   if (typeof window === 'undefined') return;
   try {
     const { supabase } = await import('../lib/supabaseClient');
-    await supabase.functions.invoke('send-push', {
+    const { error } = await supabase.functions.invoke('send-push', {
       body: payload,
     });
+    if (error) {
+      console.warn('[WebPush] Retorno de erro do send-push remoto:', error);
+    }
   } catch (err) {
     console.warn('[WebPush] Falha silenciosa ao acionar send-push remoto:', err);
   }
 }
+
