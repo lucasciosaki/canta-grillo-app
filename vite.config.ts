@@ -49,12 +49,6 @@ export default defineConfig({
     host: true, // expõe para 0.0.0.0 (rede local Wi-Fi / celular)
     port: 5173,
     allowedHosts: true, // permite acesso via túneis HTTPS (Cloudflare, ngrok, etc) e IPs externos
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-      },
-    },
   },
   plugins: [
     react(),
