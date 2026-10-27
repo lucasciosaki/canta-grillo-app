@@ -343,10 +343,16 @@ export async function subscribeToWebPush(userId: string): Promise<boolean> {
 export interface RemoteWebPushRequest {
   user_ids?: string[];
   broadcast_except_user_id?: string;
+  front_id?: string;
+  front_slug?: string;
+  role?: 'admin';
+  quarto_id?: string;
+  except_user_id?: string;
   title: string;
   body: string;
   tag?: string;
   url?: string;
+  icon?: string;
 }
 
 /**

@@ -10,7 +10,6 @@ interface DenunciaPontoScreenProps {
 }
 
 import { uploadImageToBucket } from '../../utils/imageStorage';
-import { triggerRemoteWebPush } from '../../utils/browserPush';
 
 export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
   onBack,
@@ -100,15 +99,6 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
             morador_id: user.id,
           })
           .maybeSingle();
-
-        // 4. Aciona Web Push em segundo plano para acordar os celulares dos demais moradores
-        triggerRemoteWebPush({
-          broadcast_except_user_id: user.id,
-          title: '🧹 Novo Ponto de Bagunça',
-          body: `${localDescricao.trim()} — Abra para ver a foto (prazo de 24h)`,
-          tag: `ponto-novo-${pontoCriado.id}`,
-          url: '/?screen=home',
-        });
       }
 
       setSucesso(true);

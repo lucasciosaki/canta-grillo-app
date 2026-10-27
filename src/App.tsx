@@ -23,7 +23,6 @@ import { useNotifications } from './hooks/useNotifications';
 import { NotificationsDrawer } from './features/notificacoes/NotificationsDrawer';
 import type { NotificationTargetScreen } from './types/notificacoes';
 import { getProfilesCached, invalidateCache } from './utils/sessionDataCache';
-import { triggerRemoteWebPush } from './utils/browserPush';
 
 type Screen =
   | 'home' | 'rotina' | 'casa'
@@ -437,14 +436,6 @@ function MainApp() {
         ...prev,
         [id]: [...(prev[id] || []), msgCompleta],
       }));
-
-      triggerRemoteWebPush({
-        broadcast_except_user_id: user.id,
-        title: `💬 Ponto de Bagunça (${nomeExibicao})`,
-        body: texto.trim(),
-        tag: `ponto-msg-${novaMsg.id}`,
-        url: '/?screen=home',
-      });
     } else if (error) {
       alert('Erro ao enviar mensagem: ' + error.message);
     }

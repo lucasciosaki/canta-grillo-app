@@ -3,7 +3,6 @@ import { supabase } from '../../../lib/supabaseClient';
 import { useAuth } from '../../../contexts/AuthContext';
 import type { Front, FrontMember, MensagemFrente } from '../../../types/frentes';
 import { obterApelidoFrente } from '../../../types/frentes';
-import { triggerRemoteWebPush } from '../../../utils/browserPush';
 import { Send, Star, MessageSquare } from 'lucide-react';
 
 interface FrenteChatTabProps {
@@ -116,19 +115,6 @@ export const FrenteChatTab: React.FC<FrenteChatTabProps> = ({ frente, membros })
         alert('Erro ao enviar mensagem: ' + error.message);
         setMensagens((prev) => prev.filter((m) => m.id !== tempId));
       } else {
-        const destinatarios = membros
-          .map((m) => m.profile_id)
-          .filter((id) => id !== user.id);
-        if (destinatarios.length > 0) {
-          const apelidoAutor = profile?.apelido || profile?.nome?.split(' ')[0] || 'Morador';
-          triggerRemoteWebPush({
-            user_ids: destinatarios,
-            title: `💬 ${frente.nome} (${apelidoAutor})`,
-            body: texto,
-            tag: `chat-frente-${frente.id}`,
-            url: '/?screen=frentes',
-          });
-        }
         await carregarMensagens();
       }
     } catch (err: any) {

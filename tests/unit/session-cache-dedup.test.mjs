@@ -126,7 +126,7 @@ describe('Unit Tests: Session Cache, Deduplication & Request Reduction', () => {
       assert.ok(appContent.includes('canta-grillo:ponto-realtime'), 'App.tsx deve escutar evento customizado de ponto realtime');
 
       assert.ok(notifContent.includes("addEventListener('pageshow'"), 'useNotifications.ts deve escutar pageshow');
-      assert.ok(notifContent.includes('ponto-novo-${novoPonto.id}'), 'useNotifications.ts deve disparar push imediato no INSERT de pontos_bagunca');
+      assert.ok(notifContent.includes('canta-grillo:ponto-realtime'), 'useNotifications.ts deve sincronizar evento customizado no INSERT de pontos_bagunca');
     });
 
     it('browserPush.ts deve usar getOrRegisterServiceWorker com timeout para não travar no Android/iOS', () => {

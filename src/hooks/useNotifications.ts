@@ -10,9 +10,6 @@ import {
 import {
   getNotificationPermission,
   requestNotificationPermission,
-  sendBrowserPush,
-  hasBeenPushed,
-  prunePushedEvents,
   subscribeToWebPush,
 } from '../utils/browserPush';
 import {
@@ -81,7 +78,6 @@ export function useNotifications() {
   useEffect(() => {
     const currentPerm = getNotificationPermission();
     setPermission(currentPerm);
-    prunePushedEvents();
 
     if (currentPerm === 'granted' && user?.id) {
       subscribeToWebPush(user.id).catch((err) =>
@@ -690,28 +686,6 @@ export function useNotifications() {
 
       const listaFinal = Array.from(mapaMesclado.values());
       setNotifications(listaFinal);
-
-      // Dispara push local para novidades se o app estiver aberto
-      listaFinal.forEach((notif) => {
-        if (!notif.read && !hasBeenPushed(notif.id)) {
-          if (
-            notif.urgency === 'urgent' ||
-            notif.category === 'ponto_bagunca' ||
-            notif.category === 'chat_frente' ||
-            notif.category === 'mercado' ||
-            notif.category === 'cerveja' ||
-            notif.category === 'funca'
-          ) {
-            sendBrowserPush({
-              id: notif.id,
-              title: notif.title,
-              body: notif.message,
-              tag: notif.category,
-              url: `/?screen=${notif.targetScreen}`,
-            });
-          }
-        }
-      });
     } catch (err) {
       console.error('[useNotifications] Erro ao carregar notificações:', err);
     } finally {
@@ -879,17 +853,6 @@ export function useNotifications() {
               setNotifications(atualizado);
             }
           }
-
-          // 2. Disparo imediato de Browser Push nativo para outros moradores
-          if (novoPonto.status === 'aberta' && novoPonto.relator_id !== user.id) {
-            sendBrowserPush({
-              id: `ponto-novo-${novoPonto.id}`,
-              title: '🧹 Novo Ponto de Bagunça',
-              body: `${novoPonto.local_descricao || 'Bagunça relatada'} — Abra para ver a foto (prazo de 24h)`,
-              tag: 'ponto_bagunca',
-              url: '/?screen=home',
-            });
-          }
         }
 
         if (typeof window !== 'undefined') {
@@ -898,15 +861,6 @@ export function useNotifications() {
         triggerGranularRefresh('pontos_bagunca');
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, (payload: any) => {
-        if (payload?.eventType === 'INSERT' && payload.new?.id && payload.new?.autor_id !== user.id) {
-          sendBrowserPush({
-            id: `ponto-msg-${payload.new.id}`,
-            title: '💬 Nova mensagem no Ponto de Bagunça',
-            body: payload.new.conteudo || 'Nova mensagem na discussão',
-            tag: 'ponto_bagunca',
-            url: '/?screen=home',
-          });
-        }
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
         }
@@ -918,16 +872,7 @@ export function useNotifications() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'registro_diario_faxina' }, () =>
         triggerGranularRefresh('registro_diario_faxina')
       )
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_frente' }, (payload: any) => {
-        if (payload?.eventType === 'INSERT' && payload.new?.autor_id !== user.id) {
-          sendBrowserPush({
-            id: `msg-frente-push-${payload.new.id}`,
-            title: '💬 Nova Mensagem na Frente',
-            body: payload.new.conteudo || 'Nova mensagem recebida',
-            tag: 'chat_frente',
-            url: '/?screen=frentes',
-          });
-        }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_frente' }, () => {
         triggerGranularRefresh('mensagens_frente');
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'front_members' }, () =>
@@ -978,16 +923,6 @@ export function useNotifications() {
               if (prev.some((n) => n.id === notifId)) return prev;
               return [novaNotif, ...prev];
             });
-
-            if (!novaNotif.read) {
-              sendBrowserPush({
-                id: notifId,
-                title: novaNotif.title,
-                body: novaNotif.message,
-                tag: novaNotif.category,
-                url: `/?screen=${novaNotif.targetScreen}`,
-              });
-            }
 
             if (row.category === 'ponto_bagunca' && typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));

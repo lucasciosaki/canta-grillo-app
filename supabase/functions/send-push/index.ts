@@ -5,11 +5,37 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 
+interface DatabaseWebhookRecord {
+  id?: string;
+  user_id: string;
+  title: string;
+  message: string;
+  category?: string;
+  urgency?: string;
+  target_screen?: string;
+  target_params?: any;
+}
+
 interface PushPayload {
+  // 1. Formato Supabase Database Webhook (INSERT em public.notifications)
+  type?: string;
+  table?: string;
+  schema?: string;
+  record?: DatabaseWebhookRecord;
+
+  // 2. Formato por ID de notificação
+  notification_id?: string;
+
+  // 3. Formato manual / legado com filtros
   user_ids?: string[];
   broadcast_except_user_id?: string;
-  title: string;
-  body: string;
+  front_id?: string;
+  front_slug?: string;
+  role?: 'admin';
+  quarto_id?: string;
+  except_user_id?: string;
+  title?: string;
+  body?: string;
   tag?: string;
   url?: string;
   icon?: string;
@@ -32,8 +58,9 @@ function b64urlEncode(bytes: Uint8Array): string {
 }
 
 function b64urlDecode(str: string): Uint8Array {
-  const padding = '='.repeat((4 - (str.length % 4)) % 4);
-  const base64 = (str + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const clean = str.replace(/^["']|["']$/g, '').trim().replace(/=+$/, '');
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4);
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = atob(base64);
   const out = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
@@ -76,6 +103,10 @@ async function hkdf(
   return okm.slice(0, length);
 }
 
+function cleanBase64Url(str: string): string {
+  return str.replace(/^["']|["']$/g, '').trim().replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 /**
  * Gera cabeçalho Authorization VAPID (RFC 8292 ES256) para o endpoint de destino.
  */
@@ -88,7 +119,10 @@ async function createVapidAuthorization(
   const urlObj = new URL(endpoint);
   const audience = `${urlObj.protocol}//${urlObj.host}`;
 
-  const pubBytes = b64urlDecode(vapidPublicKeyB64);
+  const cleanPubKey = cleanBase64Url(vapidPublicKeyB64);
+  const cleanPrivKey = cleanBase64Url(vapidPrivateKeyB64);
+
+  const pubBytes = b64urlDecode(cleanPubKey);
   const x = b64urlEncode(pubBytes.slice(1, 33));
   const y = b64urlEncode(pubBytes.slice(33, 65));
 
@@ -99,7 +133,7 @@ async function createVapidAuthorization(
       crv: 'P-256',
       x,
       y,
-      d: vapidPrivateKeyB64,
+      d: cleanPrivKey,
       ext: true,
     },
     { name: 'ECDSA', namedCurve: 'P-256' },
@@ -118,7 +152,7 @@ async function createVapidAuthorization(
   );
   const jwt = `${headerB64}.${payloadB64}.${b64urlEncode(signature)}`;
 
-  return `vapid t=${jwt}, k=${vapidPublicKeyB64}`;
+  return `vapid t=${jwt}, k=${cleanPubKey}`;
 }
 
 /**
@@ -200,28 +234,195 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const body: PushPayload = await req.json();
 
-    const {
-      user_ids,
-      broadcast_except_user_id,
-      title,
-      body: msgBody,
-      tag = 'canta-grillo',
-      url = '/',
-      icon = '/logo.png',
-    } = body;
+    const authHeader = req.headers.get('Authorization') || '';
+    const webhookSecretHeader = req.headers.get('x-webhook-secret') || '';
+    const expectedSecret = Deno.env.get('WEBHOOK_SECRET');
+
+    const isServiceRole = authHeader.includes(supabaseServiceKey);
+    const isWebhookAuthorized = expectedSecret ? (webhookSecretHeader === expectedSecret || authHeader.includes(expectedSecret)) : false;
+
+    let targetUserIds: string[] | null = null;
+    let pushTitle = body.title || 'Canta Grillo';
+    let pushBody = body.body || '';
+    let pushTag = body.tag || 'canta-grillo';
+    let pushUrl = body.url || '/';
+    let pushIcon = body.icon || '/logo.png';
+
+    // 1. Cenário Database Webhook: INSERT ou UPDATE na tabela public.notifications
+    if ((body.type === 'INSERT' || body.type === 'UPDATE') && body.table === 'notifications' && body.record) {
+      let row = body.record;
+
+      // Se a chamada não vier autenticada com service_role ou WEBHOOK_SECRET,
+      // valida contra o banco para garantir que a notificação é 100% autêntica e gerada pelo PostgreSQL
+      if (!isServiceRole && !isWebhookAuthorized) {
+        if (!row.id) {
+          return new Response(
+            JSON.stringify({ error: 'Não autorizado: ID de notificação ausente.' }),
+            { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const { data: dbRow, error: dbErr } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('id', row.id)
+          .maybeSingle();
+
+        if (dbErr || !dbRow) {
+          return new Response(
+            JSON.stringify({ error: 'Não autorizado ou notificação não encontrada no banco.' }),
+            { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        row = dbRow;
+      }
+
+      targetUserIds = [row.user_id];
+      pushTitle = row.title;
+      pushBody = row.message;
+      pushTag = row.category || 'canta-grillo';
+      pushUrl = row.target_screen ? `/?screen=${row.target_screen}` : '/';
+    }
+    // 2. Cenário acionamento por notification_id
+    else if (body.notification_id) {
+      const { data: row } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('id', body.notification_id)
+        .maybeSingle();
+
+      if (!row) {
+        return new Response(
+          JSON.stringify({ error: 'Notificação não encontrada no banco.' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      targetUserIds = [row.user_id];
+      pushTitle = row.title;
+      pushBody = row.message;
+      pushTag = row.category || 'canta-grillo';
+      pushUrl = row.target_screen ? `/?screen=${row.target_screen}` : '/';
+    }
+    // 3. Cenário com seletores (Database-First e manutenção interna)
+    else {
+      // Validação de segurança: autenticação obrigatória para chamadas diretas
+      if (!isServiceRole && !isWebhookAuthorized) {
+        const token = authHeader.replace(/^Bearer\s+/i, '');
+        if (!token) {
+          return new Response(
+            JSON.stringify({ error: 'Não autorizado: token de autenticação não fornecido.' }),
+            { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+        if (userError || !user) {
+          return new Response(
+            JSON.stringify({ error: 'Token de usuário inválido ou expirado.' }),
+            { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role, ativo')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (!profile || !profile.ativo) {
+          return new Response(
+            JSON.stringify({ error: 'Acesso negado: morador inativo.' }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
+      const {
+        user_ids,
+        broadcast_except_user_id,
+        front_id,
+        front_slug,
+        role,
+        quarto_id,
+        except_user_id,
+      } = body;
+
+      if (user_ids && Array.isArray(user_ids) && user_ids.length > 0) {
+        targetUserIds = [...user_ids];
+      }
+
+      let resolvedFrontId = front_id;
+      if (!resolvedFrontId && front_slug) {
+        const { data: frontData } = await supabase
+          .from('fronts')
+          .select('id')
+          .eq('slug', front_slug)
+          .maybeSingle();
+        if (frontData?.id) {
+          resolvedFrontId = frontData.id;
+        }
+      }
+
+      if (resolvedFrontId) {
+        const { data: members } = await supabase
+          .from('front_members')
+          .select('profile_id')
+          .eq('front_id', resolvedFrontId);
+        const mIds = (members || []).map((m: any) => m.profile_id).filter(Boolean);
+        targetUserIds = targetUserIds ? [...new Set([...targetUserIds, ...mIds])] : mIds;
+      }
+
+      if (role === 'admin') {
+        const { data: admins } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('role', 'admin')
+          .eq('ativo', true);
+        const aIds = (admins || []).map((a: any) => a.id).filter(Boolean);
+        targetUserIds = targetUserIds ? [...new Set([...targetUserIds, ...aIds])] : aIds;
+      }
+
+      if (quarto_id) {
+        const { data: moradores } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('quarto_id', quarto_id)
+          .eq('ativo', true);
+        const qIds = (moradores || []).map((m: any) => m.id).filter(Boolean);
+        targetUserIds = targetUserIds ? [...new Set([...targetUserIds, ...qIds])] : qIds;
+      }
+
+      const excludeUserId = except_user_id || broadcast_except_user_id;
+      if (targetUserIds !== null && excludeUserId) {
+        targetUserIds = targetUserIds.filter((id) => id !== excludeUserId);
+      }
+    }
 
     // 1. Busca aparelhos inscritos (por lista de user_ids ou broadcast exceto autor)
     let query = supabase
       .from('push_subscriptions')
       .select('id, user_id, endpoint, p256dh, auth');
 
-    if (user_ids && Array.isArray(user_ids) && user_ids.length > 0) {
-      query = query.in('user_id', user_ids);
-    } else if (broadcast_except_user_id) {
-      query = query.neq('user_id', broadcast_except_user_id);
+    if (targetUserIds !== null) {
+      if (targetUserIds.length === 0) {
+        return new Response(
+          JSON.stringify({
+            message: 'Nenhum destinatário encontrado para os filtros informados.',
+            sent: 0,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      query = query.in('user_id', targetUserIds);
+    } else if (body.broadcast_except_user_id) {
+      query = query.neq('user_id', body.broadcast_except_user_id);
     } else {
       return new Response(
-        JSON.stringify({ error: 'Informe user_ids ou broadcast_except_user_id.' }),
+        JSON.stringify({
+          error:
+            'Informe record de webhook, notification_id, user_ids, front_id, front_slug, role, quarto_id ou broadcast_except_user_id.',
+        }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -239,11 +440,11 @@ serve(async (req: Request) => {
     }
 
     const pushPayloadStr = JSON.stringify({
-      title,
-      body: msgBody,
-      tag,
-      url,
-      icon,
+      title: pushTitle,
+      body: pushBody,
+      tag: pushTag,
+      url: pushUrl,
+      icon: pushIcon,
     });
 
     // 2. Criptografa (aes128gcm) e dispara o Web Push assinado com VAPID para cada aparelho
