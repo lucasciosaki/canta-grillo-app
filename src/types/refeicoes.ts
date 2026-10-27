@@ -121,3 +121,49 @@ export function calcularResumoMisturas(
     totalConvidados,
   };
 }
+
+/**
+ * Retorna true se a data em formato YYYY-MM-DD for Sábado (6) ou Domingo (0).
+ * Faz o parse seguro dos componentes de data evitando distorções de fuso horário.
+ */
+export function isWeekendDateString(dateStr: string): boolean {
+  if (!dateStr) return false;
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) return false;
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return dow === 0 || dow === 6;
+}
+
+/**
+ * Avança (+1) ou retrocede (-1) a partir de dateStr em busca do dia útil mais próximo,
+ * pulando automaticamente sábados e domingos. Se maxDateStr for informado e o próximo
+ * dia útil ultrapassar esse teto, retorna a própria dateStr original.
+ */
+export function getAdjacentWeekday(
+  dateStr: string,
+  direction: -1 | 1,
+  maxDateStr?: string
+): string {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) return dateStr;
+  const curr = new Date(year, month - 1, day);
+
+  do {
+    curr.setDate(curr.getDate() + direction);
+  } while (isWeekendDateString(getLocalDateString(curr)));
+
+  const candidate = getLocalDateString(curr);
+  if (maxDateStr && candidate > maxDateStr) {
+    return dateStr;
+  }
+  return candidate;
+}
+
+/**
+ * Retorna a data inicial para exibição na Folha de Misturas.
+ * Se hoje for fim de semana, mantém hojeStr para exibir o banner informativo de fim de semana.
+ */
+export function getInitialMisturasDate(hojeStr: string): string {
+  return hojeStr;
+}
+

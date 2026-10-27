@@ -6,6 +6,9 @@ import {
   getLocalDateString,
   formatarDataExtenso,
   calcularResumoMisturas,
+  isWeekendDateString,
+  getAdjacentWeekday,
+  getInitialMisturasDate,
 } from '../../src/types/refeicoes.ts';
 
 describe('Unit Tests: Folha de Misturas Digital (Regras de Negócio RN01)', () => {
@@ -116,5 +119,60 @@ describe('Unit Tests: Folha de Misturas Digital (Regras de Negócio RN01)', () =
       assert.equal(isDataEditavel(hoje, hoje), true, 'Dia de hoje deve ser editável');
     });
   });
+
+  describe('4. Bloqueio e Navegação de Finais de Semana (Sábado e Domingo)', () => {
+    it('isWeekendDateString deve identificar corretamente Sábado e Domingo como fim de semana', () => {
+      // 2026-10-12 (Segunda) a 2026-10-16 (Sexta)
+      assert.equal(isWeekendDateString('2026-10-12'), false, 'Segunda não é fim de semana');
+      assert.equal(isWeekendDateString('2026-10-13'), false, 'Terça não é fim de semana');
+      assert.equal(isWeekendDateString('2026-10-14'), false, 'Quarta não é fim de semana');
+      assert.equal(isWeekendDateString('2026-10-15'), false, 'Quinta não é fim de semana');
+      assert.equal(isWeekendDateString('2026-10-16'), false, 'Sexta não é fim de semana');
+
+      // Fim de semana
+      assert.equal(isWeekendDateString('2026-10-17'), true, 'Sábado deve ser fim de semana');
+      assert.equal(isWeekendDateString('2026-10-18'), true, 'Domingo deve ser fim de semana');
+    });
+
+    it('getAdjacentWeekday deve retroceder pulando fins de semana (de Segunda direto para Sexta)', () => {
+      // De Segunda 19/10/2026 voltando 1 dia útil -> deve pular Domingo 18 e Sábado 17, caindo na Sexta 16/10/2026
+      const anterior = getAdjacentWeekday('2026-10-19', -1);
+      assert.equal(anterior, '2026-10-16', 'Voltando da Segunda pula o fim de semana e vai para Sexta');
+
+      // De Sábado 17/10/2026 voltando 1 dia útil -> Sexta 16/10/2026
+      assert.equal(getAdjacentWeekday('2026-10-17', -1), '2026-10-16');
+
+      // De Domingo 18/10/2026 voltando 1 dia útil -> Sexta 16/10/2026
+      assert.equal(getAdjacentWeekday('2026-10-18', -1), '2026-10-16');
+
+      // De Terça 20/10/2026 voltando 1 dia útil -> Segunda 19/10/2026
+      assert.equal(getAdjacentWeekday('2026-10-20', -1), '2026-10-19');
+    });
+
+    it('getAdjacentWeekday deve avançar pulando fins de semana (de Sexta direto para Segunda)', () => {
+      // De Sexta 16/10/2026 avançando com maxDate 20/10/2026 -> deve pular Sábado 17 e Domingo 18, caindo na Segunda 19/10/2026
+      const proximo = getAdjacentWeekday('2026-10-16', 1, '2026-10-20');
+      assert.equal(proximo, '2026-10-19', 'Avançando da Sexta pula o fim de semana e vai para Segunda');
+
+      // De Segunda 19/10/2026 avançando -> Terça 20/10/2026
+      assert.equal(getAdjacentWeekday('2026-10-19', 1, '2026-10-20'), '2026-10-20');
+    });
+
+    it('getAdjacentWeekday deve respeitar o teto de maxDateStr impedindo avanço para o futuro', () => {
+      // Sexta 16/10/2026 com maxDate sendo a própria Sexta -> não pode avançar
+      const ret = getAdjacentWeekday('2026-10-16', 1, '2026-10-16');
+      assert.equal(ret, '2026-10-16', 'Não pode ultrapassar maxDate');
+
+      // Sábado 17/10/2026 com maxDate sendo o Sábado -> próximo dia útil (Segunda 19) excede maxDate, mantém no Sábado
+      const retSab = getAdjacentWeekday('2026-10-17', 1, '2026-10-17');
+      assert.equal(retSab, '2026-10-17', 'Não deve avançar além de maxDate');
+    });
+
+    it('getInitialMisturasDate deve retornar a data do dia para exibição clara do banner de fim de semana', () => {
+      assert.equal(getInitialMisturasDate('2026-10-17'), '2026-10-17');
+      assert.equal(getInitialMisturasDate('2026-10-19'), '2026-10-19');
+    });
+  });
 });
+
 

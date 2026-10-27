@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabaseClient';
-import { getLocalDateString, formatarDataExtenso } from '../../types/refeicoes';
+import { getLocalDateString, formatarDataExtenso, isWeekendDateString } from '../../types/refeicoes';
 import { Button } from '../../components/ui';
 import {
   Utensils,
@@ -16,6 +16,7 @@ import {
 export const ConvidadoScreen: React.FC = () => {
   const { user, profile, signOut } = useAuth();
   const hoje = useMemo(() => getLocalDateString(new Date()), []);
+  const isFimDeSemanaHoje = useMemo(() => isWeekendDateString(hoje), [hoje]);
 
   const [comeuHoje, setComeuHoje] = useState(false);
   const [loadingHoje, setLoadingHoje] = useState(true);
@@ -38,6 +39,11 @@ export const ConvidadoScreen: React.FC = () => {
   // 1. Carrega se o convidado já marcou refeição hoje
   const carregarStatusHoje = useCallback(async () => {
     if (!user) return;
+    if (isFimDeSemanaHoje) {
+      setComeuHoje(false);
+      setLoadingHoje(false);
+      return;
+    }
     setLoadingHoje(true);
 
     const { data, error } = await supabase
@@ -53,7 +59,7 @@ export const ConvidadoScreen: React.FC = () => {
       setComeuHoje(false);
     }
     setLoadingHoje(false);
-  }, [user, hoje]);
+  }, [user, hoje, isFimDeSemanaHoje]);
 
   // 2. Carrega total de refeições do mês
   const carregarHistoricoMes = useCallback(async () => {
@@ -127,6 +133,13 @@ export const ConvidadoScreen: React.FC = () => {
   // 4. Marcação de refeição de hoje (1.0 = comeu na casa)
   const handleToggleRefeicao = async (marcar: boolean) => {
     if (!user) return;
+    if (isFimDeSemanaHoje) {
+      setMensagemFeedback({
+        tipo: 'err',
+        texto: 'A Folha de Misturas funciona exclusivamente de segunda a sexta-feira.',
+      });
+      return;
+    }
     setSalvando(true);
     setMensagemFeedback(null);
 
@@ -240,6 +253,25 @@ export const ConvidadoScreen: React.FC = () => {
           {loadingHoje ? (
             <div className="py-8 text-center text-xs text-muted">
               Verificando seu registro de hoje...
+            </div>
+          ) : isFimDeSemanaHoje ? (
+            /* Estado: Fim de semana - Folha fechada */
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-cream/60 border border-line text-center">
+                <Utensils className="w-8 h-8 text-muted mx-auto mb-2 opacity-50" />
+                <h4 className="text-sm font-bold text-ink">Sem Folha de Misturas no fim de semana</h4>
+                <p className="text-xs text-muted mt-1 leading-relaxed">
+                  A Folha de Misturas funciona exclusivamente de segunda a sexta-feira. Aproveite o fim de semana!
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                full
+                disabled
+              >
+                Folha Fechada no Fim de Semana
+              </Button>
             </div>
           ) : comeuHoje ? (
             /* Estado: Já marcou que comeu */

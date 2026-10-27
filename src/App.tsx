@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { MobileShell } from './components/layout/MobileShell';
 import type { MainTab } from './components/layout/BottomNav';
 import { Button, LinkButton, PageTitle, Row, Section, Tag } from './components/ui';
@@ -17,7 +17,7 @@ import { FuncasScreen } from './features/funcas/FuncasScreen';
 import { AtasScreen } from './features/atas/AtasScreen';
 import { MeuPerfilScreen } from './features/perfil/MeuPerfilScreen';
 import { supabase } from './lib/supabaseClient';
-import { getLocalDateString, numericToMarca } from './types/refeicoes';
+import { getLocalDateString, numericToMarca, isWeekendDateString } from './types/refeicoes';
 import type { PontoBagunca, MensagemPontoBagunca } from './types/pontosBagunca';
 import { useNotifications } from './hooks/useNotifications';
 import { NotificationsDrawer } from './features/notificacoes/NotificationsDrawer';
@@ -45,6 +45,7 @@ function MainApp() {
 
   const [minhaMarcaHoje, setMinhaMarcaHoje] = useState<string | null>(null);
   const [totalMisturasHoje, setTotalMisturasHoje] = useState<number | null>(null);
+  const isFimDeSemanaHoje = useMemo(() => isWeekendDateString(getLocalDateString(new Date())), []);
 
   const [funcasReais, setFuncasReais] = useState<any[]>([]);
   const [frenteFiltroFuncas, setFrenteFiltroFuncas] = useState<string | null>(null);
@@ -234,6 +235,11 @@ function MainApp() {
   useEffect(() => {
     if (!user?.id || screen !== 'home') return;
     const hoje = getLocalDateString(new Date());
+    if (isWeekendDateString(hoje)) {
+      setTotalMisturasHoje(0);
+      setMinhaMarcaHoje('—');
+      return;
+    }
     supabase
       .from('daily_meals')
       .select('usuario_id, misturas_consumidas')
@@ -500,17 +506,30 @@ function MainApp() {
               >
                 <div>
                   <p className="text-[11px] uppercase tracking-wider text-white/80 font-bold">Folha de Misturas</p>
-                  <h3 className="text-base font-semibold mt-0.5">Marcar almoço e janta</h3>
-                  {totalMisturasHoje !== null && (
+                  <h3 className="text-base font-semibold mt-0.5">
+                    {isFimDeSemanaHoje ? 'Fechada no fim de semana (Seg a Sex)' : 'Marcar almoço e janta'}
+                  </h3>
+                  {!isFimDeSemanaHoje && totalMisturasHoje !== null && (
                     <p className="text-xs text-white/80 mt-1">
                       {totalMisturasHoje.toFixed(1).replace('.0', '')} misturas hoje na república
                     </p>
                   )}
+                  {isFimDeSemanaHoje && (
+                    <p className="text-xs text-white/80 mt-1">
+                      Funciona de segunda a sexta-feira
+                    </p>
+                  )}
                 </div>
                 <div className="text-right">
-                  <span className="text-[10px] text-white/80 block uppercase font-medium">Sua cota</span>
-                  <span className="inline-block mt-0.5 px-3 py-1 rounded-lg bg-white/20 font-bold text-lg leading-tight backdrop-blur-xs">
-                    {minhaMarcaHoje || '—'}
+                  <span className="text-[10px] text-white/80 block uppercase font-medium">
+                    {isFimDeSemanaHoje ? 'Status' : 'Sua cota'}
+                  </span>
+                  <span
+                    className={`inline-block mt-0.5 px-3 py-1 rounded-lg bg-white/20 font-bold leading-tight backdrop-blur-xs ${
+                      isFimDeSemanaHoje ? 'text-xs py-1.5' : 'text-lg'
+                    }`}
+                  >
+                    {isFimDeSemanaHoje ? 'Fim de semana' : minhaMarcaHoje || '—'}
                   </span>
                 </div>
               </button>

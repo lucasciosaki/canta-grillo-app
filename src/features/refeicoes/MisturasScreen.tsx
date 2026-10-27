@@ -10,6 +10,8 @@ import {
   getLocalDateString,
   formatarDataExtenso,
   calcularResumoMisturas,
+  isWeekendDateString,
+  getAdjacentWeekday,
 } from '../../types/refeicoes';
 import { PageTitle, Tag } from '../../components/ui';
 import {
@@ -156,23 +158,33 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
   }, [selectedDate]);
 
   const isHoje = selectedDate === hoje;
+  const isFimDeSemana = isWeekendDateString(selectedDate);
+  const podeEditarHoje = isHoje && !isFimDeSemana;
 
-  // Navegação de dias (dias > hoje são estritamente bloqueados)
-  const mudarDia = (dias: number) => {
-    const [ano, mes, dia] = selectedDate.split('-').map(Number);
-    const d = new Date(ano, mes - 1, dia);
-    d.setDate(d.getDate() + dias);
-    const novaData = getLocalDateString(d);
-    // Bloqueia qualquer navegação para o futuro
-    if (novaData > hoje) return;
+  // Próxima data útil para controle do botão de avançar dia
+  const proximaDataUtil = useMemo(
+    () => getAdjacentWeekday(selectedDate, 1, hoje),
+    [selectedDate, hoje]
+  );
+  const canGoForward = !isHoje && proximaDataUtil !== selectedDate && proximaDataUtil <= hoje;
+
+  // Navegação de dias (pula automaticamente sábados e domingos; dias > hoje são estritamente bloqueados)
+  const mudarDia = (direcao: -1 | 1) => {
+    const novaData = getAdjacentWeekday(selectedDate, direcao, hoje);
+    // Bloqueia qualquer navegação para o futuro ou sem alteração
+    if (novaData > hoje || novaData === selectedDate) return;
     setSelectedDate(novaData);
   };
 
-  // Marcação do próprio usuário logado (apenas no dia vigente)
+  // Marcação do próprio usuário logado (apenas no dia útil vigente)
   const handleMarcarMinhaMistura = async (marca: MarcaMistura) => {
     if (!user) return;
     if (!isHoje) {
       alert('Não é possível alterar marcações de dias anteriores (somente leitura).');
+      return;
+    }
+    if (isFimDeSemana) {
+      alert('A Folha de Misturas não opera nos finais de semana (segunda a sexta).');
       return;
     }
     const novoValor = marcaToNumeric(marca);
@@ -204,11 +216,15 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
     }
   };
 
-  // Marcação realizada pelo Admin para outro morador (apenas no dia vigente)
+  // Marcação realizada pelo Admin para outro morador (apenas no dia útil vigente)
   const handleAdminAlterarMarca = async (targetUserId: string, marca: MarcaMistura) => {
     if (!isAdmin) return;
     if (!isHoje) {
       alert('Não é possível alterar marcações de dias anteriores (somente leitura).');
+      return;
+    }
+    if (isFimDeSemana) {
+      alert('A Folha de Misturas não opera nos finais de semana (segunda a sexta).');
       return;
     }
     const novoValor = marcaToNumeric(marca);
@@ -235,11 +251,15 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
     }
   };
 
-  // Alterna presença de convidado externo pelo Administrador (apenas no dia vigente)
+  // Alterna presença de convidado externo pelo Administrador (apenas no dia útil vigente)
   const handleAdminToggleConvidado = async (convidadoId: string) => {
     if (!isAdmin) return;
     if (!isHoje) {
       alert('Não é possível alterar marcações de dias anteriores (somente leitura).');
+      return;
+    }
+    if (isFimDeSemana) {
+      alert('A Folha de Misturas não opera nos finais de semana (segunda a sexta).');
       return;
     }
     const atual = mealsMap[convidadoId] ?? 0.0;
@@ -341,9 +361,9 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
 
           <button
             onClick={() => mudarDia(1)}
-            disabled={isHoje}
+            disabled={!canGoForward}
             aria-label="Próximo dia"
-            title={isHoje ? 'Não é possível navegar para dias futuros' : 'Próximo dia'}
+            title={!canGoForward ? 'Não é possível navegar para dias futuros' : 'Próximo dia útil'}
             className="p-2 rounded-lg hover:bg-line/40 text-muted hover:text-ink disabled:opacity-20 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight className="w-5 h-5" />
@@ -373,20 +393,32 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
             <div>
               <h4 className="text-sm font-semibold text-ink">Sua cota de misturas</h4>
               <p className="text-[11px] text-muted">
-                {isHoje
+                {isFimDeSemana
+                  ? 'Folha fechada no fim de semana'
+                  : isHoje
                   ? 'Você tem direito a 2 misturas por dia'
                   : `Visualizando registro de ${selectedDate}`}
               </p>
             </div>
           </div>
-          <Tag tone={!isHoje ? 'neutral' : minhaMarcaAtual === '—' ? 'neutral' : 'green'}>
-            {!isHoje
+          <Tag tone={isFimDeSemana ? 'neutral' : !isHoje ? 'neutral' : minhaMarcaAtual === '—' ? 'neutral' : 'green'}>
+            {isFimDeSemana
+              ? 'Fim de semana (Fechada)'
+              : !isHoje
               ? 'Histórico (Somente leitura)'
               : minhaMarcaAtual === '—'
               ? 'Não marcado'
               : `${minhaMarcaAtual} cota`}
           </Tag>
         </div>
+
+        {/* Banner informativo de fim de semana */}
+        {isFimDeSemana && (
+          <div className="mb-3.5 p-3 rounded-xl bg-cream/70 border border-line flex items-center gap-2.5 text-xs text-ink/80">
+            <AlertCircle className="w-4 h-4 text-forest shrink-0" />
+            <span>Folha fechada no fim de semana — A marcação de almoço e janta funciona apenas de segunda a sexta-feira.</span>
+          </div>
+        )}
 
         {/* 3 Botões rápidos de marcação */}
         <div className="grid grid-cols-3 gap-2">
@@ -401,12 +433,12 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
               <button
                 key={m}
                 onClick={() => handleMarcarMinhaMistura(m)}
-                disabled={!isHoje || salvandoMeu}
+                disabled={!podeEditarHoje || salvandoMeu}
                 className={`py-3.5 px-2 rounded-xl text-center transition-all ${
                   isSelected
                     ? 'bg-forest text-white font-bold ring-2 ring-forest/30 shadow-sm'
                     : 'bg-cream/60 hover:bg-cream border border-line text-ink font-semibold'
-                } ${!isHoje ? 'opacity-50 cursor-not-allowed' : ''}`}
+                } ${!podeEditarHoje ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span className="block text-xl leading-none mb-1">{m}</span>
                 <span
@@ -421,11 +453,15 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
           })}
         </div>
 
-        {!isHoje && (
+        {isFimDeSemana ? (
+          <p className="mt-2.5 text-[11px] text-muted text-center">
+            A Folha de Misturas funciona exclusivamente de segunda a sexta-feira.
+          </p>
+        ) : !isHoje ? (
           <p className="mt-2.5 text-[11px] text-muted text-center">
             Modo histórico: dias anteriores estão disponíveis apenas para consulta.
           </p>
-        )}
+        ) : null}
 
         {feedbackMsg && (
           <div
@@ -548,8 +584,8 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
 
                 {/* Controles de marcação */}
                 <div className="flex items-center gap-1">
-                  {!isHoje ? (
-                    // Em dias anteriores: somente leitura para todos (inclusive Admin)
+                  {!podeEditarHoje ? (
+                    // Em dias anteriores ou fins de semana: somente leitura para todos (inclusive Admin)
                     <div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm bg-cream/50 border border-line text-forest">
                       {marca}
                     </div>
@@ -712,10 +748,10 @@ export const MisturasScreen: React.FC<MisturasScreenProps> = ({ onBack }) => {
 
                   <div className="flex items-center gap-2">
                     <Tag tone={comeu ? 'green' : 'neutral'}>
-                      {comeu ? '🍽️ Comeu hoje' : 'Não marcou'}
+                      {comeu ? '🍽️ Comeu hoje' : isFimDeSemana ? 'Folha fechada' : 'Não marcou'}
                     </Tag>
 
-                    {isAdmin && isHoje && (
+                    {isAdmin && podeEditarHoje && (
                       <button
                         type="button"
                         onClick={() => handleAdminToggleConvidado(c.id)}

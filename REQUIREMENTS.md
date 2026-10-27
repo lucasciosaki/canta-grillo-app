@@ -336,11 +336,15 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 
 ### RN15 - Folha de Misturas Digital e Políticas RLS (daily_meals)
 - **Visualização:** Todos os moradores autenticados (`authenticated`) podem consultar o quadro de refeições diárias da casa (`SELECT` em `daily_meals`). Usuários anônimos têm acesso negado.
-- **Marcação e Atualização (Exclusivas do Dia Vigente):**
-  - Moradores comuns ativos (`ativo = true`) têm permissão para inserir e atualizar (`INSERT` e `UPDATE`) exclusivamente a sua própria linha de refeição do dia de hoje (`data = CURRENT_DATE` e `usuario_id = auth.uid()`).
+- **Operação Exclusiva em Dias Úteis (Segunda a Sexta) & Bloqueio de Finais de Semana:**
+  - A Folha de Misturas opera exclusivamente de segunda a sexta-feira. Aos sábados e domingos (`EXTRACT(DOW FROM data) IN (0, 6)`), inserções e atualizações são totalmente bloqueadas nas políticas RLS do Supabase (`WITH CHECK` e `USING`) para todos os perfis (moradores comuns, convidados externos e administradores).
+  - Na interface (`MisturasScreen`, `ConvidadoScreen` e card da Home no `App.tsx`), os botões de marcação permanecem desabilitados aos sábados e domingos, exibindo banners e badges claros de "Folha fechada no fim de semana (Seg a Sex)".
+  - A navegação por setas (`‹ / ›`) pula automaticamente sábados e domingos (ex.: de Segunda-feira voltando para Sexta-feira; de Sexta-feira avançando para Segunda-feira, respeitando o teto de hoje).
+- **Marcação e Atualização (Exclusivas do Dia Útil Vigente):**
+  - Moradores comuns ativos (`ativo = true`) têm permissão para inserir e atualizar (`INSERT` e `UPDATE`) exclusivamente a sua própria linha de refeição do dia de hoje útil (`data = CURRENT_DATE` e `usuario_id = auth.uid()`).
   - Dias anteriores (`data < CURRENT_DATE`) permanecem 100% visualizáveis no histórico para consulta e auditoria da casa, mas com alterações estritamente bloqueadas na interface e rejeitadas nas políticas RLS do PostgreSQL.
   - Moradores inativos (`ativo = false`) têm permissão bloqueada por RLS.
-  - Administradores da república (`public.is_admin()`) têm permissão para inserir ou atualizar a refeição de qualquer morador no dia de hoje (para auxílio e auditoria da cozinha).
+  - Administradores da república (`public.is_admin()`) têm permissão para inserir ou atualizar a refeição de qualquer morador no dia de hoje útil (para auxílio e auditoria da cozinha).
 - **Valores Permitidos:** `0.0` (não vai comer / `—`), `0.5` (1 mistura / almoço / `1/2`), `1.0` (2 misturas / cota completa / `X`).
 - **Bloqueio de Datas Futuras:** O app e as regras de negócio proíbem estritamente a navegação ou marcação de refeições para dias posteriores à data atual (`data > CURRENT_DATE`). O seletor de dia desativa o botão de próximo dia ao alcançar a data de hoje.
 - **Sincronização em Tempo Real:** A tabela `daily_meals` é transmitida via `supabase_realtime` para que a folha digital atualize instantaneamente em todos os celulares da casa a cada nova marcação.
@@ -360,7 +364,7 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - A folha de misturas dos moradores (`MisturasScreen`) lista os convidados cadastrados na seção "Convidados & Agregados" e agrega o total de convidados na contagem consolidada da cozinha. Administradores podem alternar a marcação de convidados no dia vigente.
 - **Políticas RLS em `daily_meals` e `profiles`:**
   - `is_active_externo()`: Função helper SQL que valida `auth.uid()` como convidado ativo (`role = 'externo' AND ativo = true`).
-  - `daily_meals`: Convidado ativo pode ler (`SELECT`), inserir (`INSERT`), atualizar (`UPDATE`) e excluir (`DELETE`) apenas os seus próprios registros no dia de hoje (`usuario_id = auth.uid() AND data = CURRENT_DATE`).
+  - `daily_meals`: Convidado ativo pode ler (`SELECT`), inserir (`INSERT`), atualizar (`UPDATE`) e excluir (`DELETE`) apenas os seus próprios registros no dia de hoje útil (`usuario_id = auth.uid() AND data = CURRENT_DATE AND EXTRACT(DOW FROM data) NOT IN (0, 6)`).
   - `profiles`: Convidado ativo pode atualizar apenas seus próprios dados cadastrais permitidos (`role IN ('morador', 'externo')`). Moradores ativos e Administradores continuam autorizados a consultar os perfis dos convidados.
 
 ---
@@ -407,9 +411,10 @@ O aplicativo dispõe de uma Central de Notificações unificada acessível via �
 17. **Frente Dogs — Refeição Pendente às 11:00h e 21:00h BRT:** Exclusivo para integrantes da Frente Dogs (não enviado a administradores a menos que façam parte da frente):
     - **Às 11:00h BRT (janela 11h–14h59):** Dispara push e alerta se refeição da manhã não foi registrada.
     - **Às 21:00h BRT (a partir das 21h):** Dispara push e alerta se refeição da noite não foi registrada -> Destino: `frentes`.
-18. **Lembrete Diário da Folha de Misturas (15:00h Almoço e 21:00h Janta BRT):**
-    - **Às 15:00h BRT:** Alerta se `misturas_consumidas === 0` (ainda não marcou almoço).
-    - **Às 21:00h BRT:** Alerta se `misturas_consumidas < 1.0` (ainda não completou janta) -> Destino: `misturas`.
+18. **Lembrete Diário da Folha de Misturas (15:00h Almoço e 21:00h Janta BRT — Segunda a Sexta):**
+    - **Operação Estrita em Dias Úteis:** Suprimido integralmente aos finais de semana (Sábado e Domingo), não disparando notificações no Sino nem Browser Push.
+    - **Às 15:00h BRT (Segunda a Sexta):** Alerta se `misturas_consumidas === 0` (ainda não marcou almoço).
+    - **Às 21:00h BRT (Segunda a Sexta):** Alerta se `misturas_consumidas < 1.0` (ainda não completou janta) -> Destino: `misturas`.
 19. **Caixas de Cerveja & Resposta de Solicitação de Baixa:** Notifica nova caixa de cerveja devida à casa, bem como confirmação (`paga`) ou recusa (`pendente`) da solicitação de baixa pelo Admin -> Destino: `cervejas`.
 20. **Alertas Exclusivos do Administrador (`profile.role === 'admin'`):** Alertas de novos cadastros pendentes de liberação (`aprovacoes`) e solicitações de baixa de cerveja aguardando conferência (`cervejas`).
 

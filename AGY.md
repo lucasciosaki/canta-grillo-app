@@ -618,6 +618,9 @@ flowchart LR
 - [x] **Folha de Misturas Digital Conectada ao Supabase:**
   - Busca lista real de moradores da tabela `public.profiles` (`ativo = true`).
   - Conexão de marcações (`—`, `1/2`, `X`) à tabela `public.daily_meals` no Supabase com data do dia (`CURRENT_DATE`).
+  - **Operação estrita de Segunda a Sexta-feira:** bloqueio integral de escrita nos finais de semana (Sábado e Domingo) no banco via políticas RLS no Supabase (`EXTRACT(DOW FROM data) NOT IN (0, 6)`) para todos os perfis (moradores, convidados e administradores).
+  - **Navegação Inteligente e Banners:** setas (`‹ / ›`) pulam automaticamente finais de semana; card da Home e tela de Misturas exibem status de "Folha fechada no fim de semana" e botões desabilitados.
+  - **Supressão de Lembretes (G18):** notificações de 15h e 21h suprimidas aos sábados e domingos no Sino e Web Push.
   - Travas cronológicas (dias anteriores somente leitura; dias futuros bloqueados).
   - Sincronização em tempo real (Supabase Realtime) para refletir marcações instantaneamente entre todos os moradores.
 - [x] **Gestão de Convidados Externos:**

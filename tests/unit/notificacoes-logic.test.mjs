@@ -33,8 +33,8 @@ describe('Unit Tests: Central de Notificações Completa & 20 Gatilhos Oficiais'
   const baseAgora = new Date('2026-10-15T17:00:00.000Z');
 
   describe('Funções Auxiliares de Fuso e Horários de Brasília', () => {
-    it('deve extrair ano, mês, dia, hora e minuto corretos no fuso America/Sao_Paulo', () => {
-      // 17:00 UTC = 14:00 BRT
+    it('deve extrair ano, mês, dia, hora, minuto e dayOfWeek corretos no fuso America/Sao_Paulo', () => {
+      // 17:00 UTC = 14:00 BRT (Quinta-feira, 15/10/2026 => dayOfWeek = 4)
       const parts = getBrasiliaDateParts(baseAgora);
       assert.equal(parts.year, 2026);
       assert.equal(parts.month, 10);
@@ -42,6 +42,15 @@ describe('Unit Tests: Central de Notificações Completa & 20 Gatilhos Oficiais'
       assert.equal(parts.hour, 14);
       assert.equal(parts.minute, 0);
       assert.equal(parts.dateStr, '2026-10-15');
+      assert.equal(parts.dayOfWeek, 4, 'Quinta-feira deve ter dayOfWeek = 4');
+
+      // Sábado 17/10/2026
+      const sabado = getBrasiliaDateParts(new Date('2026-10-17T18:00:00.000Z'));
+      assert.equal(sabado.dayOfWeek, 6, 'Sábado deve ter dayOfWeek = 6');
+
+      // Domingo 18/10/2026
+      const domingo = getBrasiliaDateParts(new Date('2026-10-18T18:00:00.000Z'));
+      assert.equal(domingo.dayOfWeek, 0, 'Domingo deve ter dayOfWeek = 0');
     });
 
     it('deve calcular tempo relativo amigável de notificações', () => {
@@ -773,6 +782,72 @@ describe('Unit Tests: Central de Notificações Completa & 20 Gatilhos Oficiais'
         misturasConsumidasHoje: 1.0,
       });
       assert.equal(check.shouldNotify, false);
+    });
+
+    it('NUNCA deve alertar no fim de semana (Sábado ou Domingo) mesmo com 0 misturas marcadas', () => {
+      // 1. Sábado às 15:15 BRT (18:15 UTC)
+      const sabado1515 = new Date('2026-10-17T18:15:00.000Z');
+      const checkSab15 = shouldNotifyMisturas15hOr21h(sabado1515, { misturasConsumidasHoje: 0 });
+      assert.equal(checkSab15.shouldNotify, false, 'Sábado 15h não deve notificar almoço');
+
+      const notifsSab15 = deriveNotifications({
+        currentUser: baseUser,
+        agora: sabado1515,
+        minhasMisturasHoje: 0,
+      });
+      assert.equal(
+        notifsSab15.some((n) => n.category === 'misturas'),
+        false,
+        'Nenhuma notificação de misturas deve ser gerada no sábado às 15h'
+      );
+
+      // 2. Sábado às 21:30 BRT (00:30 UTC de domingo)
+      const sabado2130 = new Date('2026-10-18T00:30:00.000Z');
+      const checkSab21 = shouldNotifyMisturas15hOr21h(sabado2130, { misturasConsumidasHoje: 0 });
+      assert.equal(checkSab21.shouldNotify, false, 'Sábado 21h não deve notificar janta');
+
+      const notifsSab21 = deriveNotifications({
+        currentUser: baseUser,
+        agora: sabado2130,
+        minhasMisturasHoje: 0,
+      });
+      assert.equal(
+        notifsSab21.some((n) => n.category === 'misturas'),
+        false,
+        'Nenhuma notificação de misturas deve ser gerada no sábado às 21h'
+      );
+
+      // 3. Domingo às 15:15 BRT (18:15 UTC)
+      const domingo1515 = new Date('2026-10-18T18:15:00.000Z');
+      const checkDom15 = shouldNotifyMisturas15hOr21h(domingo1515, { misturasConsumidasHoje: 0 });
+      assert.equal(checkDom15.shouldNotify, false, 'Domingo 15h não deve notificar almoço');
+
+      const notifsDom15 = deriveNotifications({
+        currentUser: baseUser,
+        agora: domingo1515,
+        minhasMisturasHoje: 0,
+      });
+      assert.equal(
+        notifsDom15.some((n) => n.category === 'misturas'),
+        false,
+        'Nenhuma notificação de misturas deve ser gerada no domingo às 15h'
+      );
+
+      // 4. Domingo às 21:30 BRT (00:30 UTC de segunda)
+      const domingo2130 = new Date('2026-10-19T00:30:00.000Z');
+      const checkDom21 = shouldNotifyMisturas15hOr21h(domingo2130, { misturasConsumidasHoje: 0 });
+      assert.equal(checkDom21.shouldNotify, false, 'Domingo 21h não deve notificar janta');
+
+      const notifsDom21 = deriveNotifications({
+        currentUser: baseUser,
+        agora: domingo2130,
+        minhasMisturasHoje: 0,
+      });
+      assert.equal(
+        notifsDom21.some((n) => n.category === 'misturas'),
+        false,
+        'Nenhuma notificação de misturas deve ser gerada no domingo às 21h'
+      );
     });
   });
 

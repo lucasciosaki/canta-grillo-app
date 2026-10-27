@@ -39,6 +39,7 @@ export interface BrasiliaDateParts {
   hour: number; // 0-23
   minute: number; // 0-59
   dateStr: string; // YYYY-MM-DD
+  dayOfWeek: number; // 0 (Domingo) a 6 (Sábado)
 }
 
 /**
@@ -64,8 +65,9 @@ export function getBrasiliaDateParts(date: Date = new Date()): BrasiliaDateParts
   const hour = parseInt(getPart('hour'), 10);
   const minute = parseInt(getPart('minute'), 10);
   const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 
-  return { year, month, day, hour, minute, dateStr };
+  return { year, month, day, hour, minute, dateStr, dayOfWeek };
 }
 
 /**
@@ -151,7 +153,18 @@ export function shouldNotifyMisturas15hOr21h(
   window: 'almoco' | 'janta' | null;
   message: string;
 } {
-  const { hour } = getBrasiliaDateParts(agora);
+  const { hour, dayOfWeek } = getBrasiliaDateParts(agora);
+
+  // A Folha de Misturas opera apenas em dias úteis (Segunda a Sexta-feira).
+  // Aos fins de semana (Sábado = 6, Domingo = 0), as notificações são suprimidas.
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return {
+      shouldNotify: false,
+      window: null,
+      message: '',
+    };
+  }
+
   const consumidas = params.misturasConsumidasHoje ?? 0;
 
   // Janela do almoço: a partir das 15:00 até 20:59 BRT

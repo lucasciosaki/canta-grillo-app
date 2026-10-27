@@ -176,7 +176,8 @@ export function useNotifications() {
 
     try {
       const agora = new Date();
-      const { dateStr } = getBrasiliaDateParts(agora);
+      const { dateStr, dayOfWeek } = getBrasiliaDateParts(agora);
+      const isFimDeSemana = dayOfWeek === 0 || dayOfWeek === 6;
       const isAdmin = profile?.role === 'admin';
 
       let currentRaw: RawTablesCache;
@@ -273,15 +274,19 @@ export function useNotifications() {
           })());
         }
         if (tablesToRefresh!.has('daily_meals')) {
-          refreshTasks.push((async () => {
-            const { data } = await supabase
-              .from('daily_meals')
-              .select('misturas_consumidas')
-              .eq('usuario_id', user.id)
-              .eq('data', dateStr)
-              .maybeSingle();
-            currentRaw.meal = data;
-          })());
+          if (isFimDeSemana) {
+            currentRaw.meal = null;
+          } else {
+            refreshTasks.push((async () => {
+              const { data } = await supabase
+                .from('daily_meals')
+                .select('misturas_consumidas')
+                .eq('usuario_id', user.id)
+                .eq('data', dateStr)
+                .maybeSingle();
+              currentRaw.meal = data;
+            })());
+          }
         }
         if (tablesToRefresh!.has('caixas_cerveja')) {
           refreshTasks.push((async () => {
@@ -369,7 +374,9 @@ export function useNotifications() {
           supabase.from('registro_diario_faxina').select('id, quarto_id, area_comum_id, data, status, fiscal_status').eq('data', dateStr),
           supabase.from('funcas').select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)'),
           supabase.from('dogs_refeicoes_diarias').select('turno').eq('data', dateStr),
-          supabase.from('daily_meals').select('misturas_consumidas').eq('usuario_id', user.id).eq('data', dateStr).maybeSingle(),
+          isFimDeSemana
+            ? Promise.resolve({ data: null })
+            : supabase.from('daily_meals').select('misturas_consumidas').eq('usuario_id', user.id).eq('data', dateStr).maybeSingle(),
           supabase.from('caixas_cerveja').select('id, motivo_descricao, status').eq('morador_id', user.id),
           isAdmin ? supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('ativo', false) : Promise.resolve({ count: 0 }),
           isAdmin ? supabase.from('caixas_cerveja').select('id', { count: 'exact', head: true }).eq('status', 'baixa_solicitada') : Promise.resolve({ count: 0 }),

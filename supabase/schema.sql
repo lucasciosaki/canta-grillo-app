@@ -594,35 +594,41 @@ USING (
   (public.is_active_externo() AND usuario_id = auth.uid())
 );
 
--- INSERT: Morador ativo ou convidado externo podem marcar sua própria refeição hoje; Admin pode marcar para qualquer um hoje
+-- INSERT: Morador ativo ou convidado externo podem marcar sua própria refeição hoje; Admin pode marcar para qualquer um hoje (apenas Segunda a Sexta)
 DROP POLICY IF EXISTS "Morador ativo ou admin insere refeicao" ON public.daily_meals;
 DROP POLICY IF EXISTS "Insercao de refeicao diaria" ON public.daily_meals;
 CREATE POLICY "Insercao de refeicao diaria"
 ON public.daily_meals FOR INSERT
 TO authenticated
 WITH CHECK (
-  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND EXTRACT(DOW FROM data) NOT IN (0, 6)
+  AND (
     public.is_admin() OR (
       (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
     )
   )
 );
 
--- UPDATE: Alterações permitidas exclusivamente no dia de hoje (dias anteriores são somente leitura)
+-- UPDATE: Alterações permitidas exclusivamente no dia de hoje (dias anteriores são somente leitura; fins de semana bloqueados)
 DROP POLICY IF EXISTS "Morador ativo ou admin atualiza refeicao" ON public.daily_meals;
 DROP POLICY IF EXISTS "Atualizacao de refeicao diaria" ON public.daily_meals;
 CREATE POLICY "Atualizacao de refeicao diaria"
 ON public.daily_meals FOR UPDATE
 TO authenticated
 USING (
-  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND EXTRACT(DOW FROM data) NOT IN (0, 6)
+  AND (
     public.is_admin() OR (
       (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
     )
   )
 )
 WITH CHECK (
-  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE AND (
+  data = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE
+  AND EXTRACT(DOW FROM data) NOT IN (0, 6)
+  AND (
     public.is_admin() OR (
       (public.is_active_morador() OR public.is_active_externo()) AND usuario_id = auth.uid()
     )
