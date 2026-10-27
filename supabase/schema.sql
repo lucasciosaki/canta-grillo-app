@@ -145,6 +145,14 @@ CREATE TABLE IF NOT EXISTS public.pontos_bagunca (
     assumida_em TIMESTAMPTZ
 );
 
+ALTER TABLE public.pontos_bagunca
+  DROP CONSTRAINT IF EXISTS ocorrencias_desorganizacao_status_check;
+ALTER TABLE public.pontos_bagunca
+  DROP CONSTRAINT IF EXISTS pontos_bagunca_status_check;
+ALTER TABLE public.pontos_bagunca
+  ADD CONSTRAINT pontos_bagunca_status_check
+  CHECK (status IN ('aberta', 'assumida', 'reuniao'));
+
 -- 9.1 VISUALIZAÇÕES DO PONTO DE BAGUNÇA (Controle de Blur e Regra de 24h)
 CREATE TABLE IF NOT EXISTS public.pontos_bagunca_visualizacoes (
     ponto_id UUID NOT NULL REFERENCES public.pontos_bagunca(id) ON DELETE CASCADE,
