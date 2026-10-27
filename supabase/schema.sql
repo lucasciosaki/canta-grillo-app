@@ -2438,7 +2438,7 @@ DECLARE
 BEGIN
   SELECT COALESCE(titulo, 'Funça') INTO v_titulo FROM public.funcas WHERE id = NEW.funca_id;
 
-  IF TG_OP = 'INSERT' AND NEW.morador_id IS NOT NULL AND (NEW.atribuido_por IS NULL OR NEW.morador_id <> NEW.atribuido_por) THEN
+  IF TG_OP = 'INSERT' AND NEW.tipo_atribuicao <> 'troca' AND NEW.morador_id IS NOT NULL AND (NEW.atribuido_por IS NULL OR NEW.morador_id <> NEW.atribuido_por) THEN
     PERFORM public.criar_notificacao_sistema(
       NEW.morador_id,
       'funca-atribuida-' || NEW.funca_id::text,
@@ -2469,6 +2469,32 @@ BEGIN
     );
   END IF;
 
+  IF (TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.tipo_atribuicao IS DISTINCT FROM 'troca')) AND NEW.tipo_atribuicao = 'troca' AND NEW.atribuido_por IS NOT NULL THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.atribuido_por,
+      'funca-troca-aceita-' || NEW.funca_id::text,
+      'funca',
+      'normal',
+      '✅ Troca de Funça Aceita',
+      'Sua solicitação de troca na funça "' || COALESCE(v_titulo, 'Funça') || '" foi aceita.',
+      'funcas',
+      jsonb_build_object('funcaId', NEW.funca_id)
+    );
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND OLD.troca_solicitada_para IS NOT NULL AND NEW.troca_solicitada_para IS NULL AND NEW.tipo_atribuicao <> 'troca' THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.morador_id,
+      'funca-troca-recusada-' || NEW.funca_id::text,
+      'funca',
+      'normal',
+      '❌ Troca de Funça Recusada',
+      'A solicitação de troca na funça "' || COALESCE(v_titulo, 'Funça') || '" foi recusada.',
+      'funcas',
+      jsonb_build_object('funcaId', NEW.funca_id)
+    );
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -2479,7 +2505,7 @@ AFTER INSERT OR UPDATE ON public.funca_atribuicoes
 FOR EACH ROW
 EXECUTE FUNCTION public.trg_fn_notify_funca_atribuicoes();
 
--- 6.6 Trigger: Caixas de Cerveja (nova dívida ou solicitação de baixa para Admin)
+-- 6.6 Trigger: Caixas de Cerveja (nova dívida, solicitação de baixa ou aprovação/recusa pelo Admin)
 CREATE OR REPLACE FUNCTION public.trg_fn_notify_caixas_cerveja()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -2518,6 +2544,32 @@ BEGIN
     END LOOP;
   END IF;
 
+  IF TG_OP = 'UPDATE' AND OLD.status = 'baixa_solicitada' AND NEW.status = 'paga' THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.morador_id,
+      'cerveja-baixa-paga-' || NEW.id::text,
+      'cerveja',
+      'normal',
+      '🍺 Baixa de Cerveja Confirmada',
+      'Sua solicitação de baixa de caixa de cerveja foi aprovada pelo Admin.',
+      'cervejas',
+      jsonb_build_object('caixaId', NEW.id)
+    );
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND OLD.status = 'baixa_solicitada' AND NEW.status = 'pendente' THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.morador_id,
+      'cerveja-baixa-recusada-' || NEW.id::text,
+      'cerveja',
+      'urgent',
+      '⚠️ Baixa de Cerveja Não Confirmada',
+      'Sua solicitação de baixa de caixa de cerveja retornou para pendente.',
+      'cervejas',
+      jsonb_build_object('caixaId', NEW.id)
+    );
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -2527,6 +2579,224 @@ CREATE TRIGGER trg_notify_caixas_cerveja
 AFTER INSERT OR UPDATE ON public.caixas_cerveja
 FOR EACH ROW
 EXECUTE FUNCTION public.trg_fn_notify_caixas_cerveja();
+
+-- 6.7 Trigger: Funças abertas para uma frente sem responsável definido
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_funcas()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  r_membro RECORD;
+  v_frente_nome TEXT;
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.frente_id IS NOT NULL THEN
+    SELECT COALESCE(nome, 'Frente') INTO v_frente_nome FROM public.fronts WHERE id = NEW.frente_id;
+
+    FOR r_membro IN
+      SELECT DISTINCT profile_id
+      FROM public.front_members
+      WHERE front_id = NEW.frente_id
+        AND (NEW.relator_id IS NULL OR profile_id <> NEW.relator_id)
+    LOOP
+      PERFORM public.criar_notificacao_sistema(
+        r_membro.profile_id,
+        'funca-frente-' || NEW.id::text,
+        'funca',
+        'normal',
+        '🛠️ Nova Funça na Frente',
+        NEW.titulo || ' (' || COALESCE(v_frente_nome, 'Frente') || ')',
+        'funcas',
+        jsonb_build_object('funcaId', NEW.id, 'frontId', NEW.frente_id)
+      );
+    END LOOP;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_funcas ON public.funcas;
+CREATE TRIGGER trg_notify_funcas
+AFTER INSERT ON public.funcas
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_funcas();
+
+-- 6.8 Trigger: Solicitações de Mercado (notifica membros da Frente Mercado)
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_solicitacoes_mercado()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  r_membro RECORD;
+  v_mercado_front_id UUID;
+  v_item_nome TEXT;
+  v_solicitante TEXT;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    SELECT id INTO v_mercado_front_id FROM public.fronts WHERE slug = 'mercado' LIMIT 1;
+    SELECT nome INTO v_item_nome FROM public.market_catalog WHERE id = NEW.item_id;
+    SELECT COALESCE(NULLIF(TRIM(apelido), ''), split_part(nome, ' ', 1), 'Morador')
+    INTO v_solicitante
+    FROM public.profiles
+    WHERE id = NEW.solicitado_por;
+
+    IF v_mercado_front_id IS NOT NULL THEN
+      FOR r_membro IN
+        SELECT DISTINCT profile_id
+        FROM public.front_members
+        WHERE front_id = v_mercado_front_id
+          AND (NEW.solicitado_por IS NULL OR profile_id <> NEW.solicitado_por)
+      LOOP
+        PERFORM public.criar_notificacao_sistema(
+          r_membro.profile_id,
+          'mercado-solicitacao-' || NEW.id::text,
+          'mercado',
+          'normal',
+          '🛒 Frente Mercado',
+          COALESCE(v_solicitante, 'Morador') || ' solicitou: ' || COALESCE(v_item_nome, 'Item'),
+          'frentes',
+          jsonb_build_object('item_id', NEW.item_id)
+        );
+      END LOOP;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_solicitacoes_mercado ON public.solicitacoes_mercado;
+CREATE TRIGGER trg_notify_solicitacoes_mercado
+AFTER INSERT ON public.solicitacoes_mercado
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_solicitacoes_mercado();
+
+-- 6.9 Trigger: Alocação e Liderança em Frentes Organizacionais
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_front_members()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_frente_nome TEXT;
+BEGIN
+  SELECT COALESCE(nome, 'Frente') INTO v_frente_nome FROM public.fronts WHERE id = NEW.front_id;
+
+  IF TG_OP = 'INSERT' THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.profile_id,
+      'frente-membro-' || NEW.front_id::text || '-' || NEW.profile_id::text,
+      'chat_frente',
+      'normal',
+      '⭐ Frentes Organizacionais',
+      CASE WHEN NEW.is_lider
+        THEN 'Você foi adicionado como Líder da frente ' || COALESCE(v_frente_nome, 'Frente') || '.'
+        ELSE 'Você foi adicionado à frente ' || COALESCE(v_frente_nome, 'Frente') || '.'
+      END,
+      'frentes',
+      jsonb_build_object('frontId', NEW.front_id)
+    );
+  ELSIF TG_OP = 'UPDATE' AND OLD.is_lider = false AND NEW.is_lider = true THEN
+    PERFORM public.criar_notificacao_sistema(
+      NEW.profile_id,
+      'frente-lider-' || NEW.front_id::text || '-' || NEW.profile_id::text,
+      'chat_frente',
+      'normal',
+      '⭐ Frentes Organizacionais',
+      'Você foi promovido a Líder da frente ' || COALESCE(v_frente_nome, 'Frente') || '.',
+      'frentes',
+      jsonb_build_object('frontId', NEW.front_id)
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_front_members ON public.front_members;
+CREATE TRIGGER trg_notify_front_members
+AFTER INSERT OR UPDATE ON public.front_members
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_front_members();
+
+-- 6.10 Trigger: Notificações de Faxina (Conclusão para Fiscal Halls e Reprovação de Tarefa)
+CREATE OR REPLACE FUNCTION public.trg_fn_notify_registro_diario_faxina()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_quarto_fiscal_id UUID;
+  v_quarto_nome TEXT;
+  v_area_nome TEXT;
+  r_morador RECORD;
+BEGIN
+  SELECT nome INTO v_quarto_nome FROM public.rooms WHERE id = NEW.quarto_id;
+  SELECT nome INTO v_area_nome FROM public.areas_comuns WHERE id = NEW.area_comum_id;
+
+  -- 1. Envio de foto de comprovação -> Notifica os moradores do quarto escalado no Halls (Fiscal)
+  IF NEW.status = 'cumprido' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'cumprido') THEN
+    SELECT e.quarto_id INTO v_quarto_fiscal_id
+    FROM public.escala_semanal_faxina e
+    JOIN public.areas_comuns a ON a.id = e.area_comum_id
+    WHERE e.semana_ano = NEW.semana_ano
+      AND e.ano = NEW.ano
+      AND LOWER(a.nome) = 'halls'
+    LIMIT 1;
+
+    IF v_quarto_fiscal_id IS NOT NULL THEN
+      FOR r_morador IN
+        SELECT id FROM public.profiles
+        WHERE quarto_id = v_quarto_fiscal_id
+          AND ativo = true
+          AND (NEW.registrado_por IS NULL OR id <> NEW.registrado_por)
+      LOOP
+        PERFORM public.criar_notificacao_sistema(
+          r_morador.id,
+          'faxina-fiscal-' || NEW.quarto_id::text || '-' || NEW.data::text,
+          'faxina',
+          'normal',
+          '🧹 Faxina Concluída para Fiscalização',
+          'O quarto ' || COALESCE(v_quarto_nome, 'escalado') || ' enviou a comprovação de ' || COALESCE(v_area_nome, 'limpeza') || '.',
+          'faxina',
+          jsonb_build_object('quarto_id', NEW.quarto_id, 'data', NEW.data)
+        );
+      END LOOP;
+    END IF;
+  END IF;
+
+  -- 2. Reprovação pelo Fiscal do Halls -> Notifica os moradores do quarto penalizado
+  IF NEW.fiscal_status = 'reprovado' AND (TG_OP = 'INSERT' OR OLD.fiscal_status IS DISTINCT FROM 'reprovado') THEN
+    FOR r_morador IN
+      SELECT id FROM public.profiles
+      WHERE quarto_id = NEW.quarto_id
+        AND ativo = true
+        AND (NEW.fiscalizado_por IS NULL OR id <> NEW.fiscalizado_por)
+    LOOP
+      PERFORM public.criar_notificacao_sistema(
+        r_morador.id,
+        'faxina-reprovada-' || NEW.quarto_id::text || '-' || NEW.data::text,
+        'faxina',
+        'urgent',
+        '⚠️ Faxina Reprovada pelo Fiscal',
+        'A limpeza de ' || COALESCE(v_area_nome, 'sua área') || ' foi reprovada: ' || COALESCE(NEW.fiscal_observacao, 'Verifique os detalhes no quadro.'),
+        'faxina',
+        jsonb_build_object('quarto_id', NEW.quarto_id, 'data', NEW.data)
+      );
+    END LOOP;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_registro_diario_faxina ON public.registro_diario_faxina;
+CREATE TRIGGER trg_notify_registro_diario_faxina
+AFTER INSERT OR UPDATE ON public.registro_diario_faxina
+FOR EACH ROW
+EXECUTE FUNCTION public.trg_fn_notify_registro_diario_faxina();
 
 -- 7. Higienização de strings Base64 legadas em colunas de texto (proteção de Egress)
 UPDATE public.pontos_bagunca SET foto_url = '/logo.png' WHERE foto_url LIKE 'data:image/%';

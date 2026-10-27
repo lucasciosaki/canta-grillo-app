@@ -179,20 +179,6 @@ export const NovaFuncaModal: React.FC<NovaFuncaModalProps> = ({
 
         if (atribError) {
           console.error('[NovaFuncaModal] Erro ao atribuir responsáveis:', atribError);
-        } else {
-          const destinatariosIds = responsaveisSelecionados
-            .map((r) => r.moradorId)
-            .filter((id) => id !== user.id);
-          if (destinatariosIds.length > 0) {
-            const { triggerRemoteWebPush } = await import('../../utils/browserPush');
-            triggerRemoteWebPush({
-              user_ids: destinatariosIds,
-              title: '🛠️ Nova Funça Atribuída',
-              body: `${titulo.trim()} — Você foi escalado para esta tarefa.`,
-              tag: `funca-${novaFunca.id}`,
-              url: '/?screen=funcas',
-            });
-          }
         }
       }
 
