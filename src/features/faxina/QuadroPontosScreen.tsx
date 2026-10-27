@@ -8,9 +8,11 @@ import type {
   Quarto,
   AreaComum,
   RegraPontoItem,
+  DiaSemanaQuadro,
 } from '../../types/faxina';
 import {
   getIsoWeekAndYear,
+  getDiasDaSemanaIso,
   REGRAS_PONTOS_PADRAO,
   obterRegraPorPontos,
 } from '../../types/faxina';
@@ -105,8 +107,12 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   const [enviandoFiscal, setEnviandoFiscal] = useState(false);
   const fiscalFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Estados de Imagem em Tela Cheia
+  // Estados de Imagem em Tela Cheia e Modal de Foto do Dia da Semana
   const [imagemExpandida, setImagemExpandida] = useState<string | null>(null);
+  const [tarefaDiaSelecionada, setTarefaDiaSelecionada] = useState<{
+    tarefa: TarefaDiariaItem;
+    dia: DiaSemanaQuadro;
+  } | null>(null);
 
   // Estados de Administração
   const [modalAdminOpen, setModalAdminOpen] = useState(false);
@@ -208,13 +214,14 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       setErrorMsg(null);
 
       const agora = new Date();
-      const { semana_ano, ano } = getIsoWeekAndYear(agora);
       const hojeStr = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'America/Sao_Paulo',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
       }).format(agora);
+      const [anoStr, mesStr, diaStr] = hojeStr.split('-').map(Number);
+      const { semana_ano, ano } = getIsoWeekAndYear(new Date(anoStr, mesStr - 1, diaStr, 12, 0, 0));
 
       // 1. Invoca a RPC nativa para garantir a escala da semana e tarefas do dia apenas na carga inicial
       if (!hasEnsuredQuadroRef.current) {
@@ -274,7 +281,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         console.warn('[QuadroPontosScreen] Usando regras padrão:', errRegras);
       }
 
-      // 4. Consulta tarefas de hoje
+      // 4. Consulta todas as tarefas da semana atual (sem foreign keys inexistentes para rooms/areas_comuns)
       const { data: tarefasDb, error: errTarefas } = await supabase
         .from('registro_diario_faxina')
         .select(`
@@ -293,19 +300,71 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           fiscal_observacao,
           fiscalizado_em,
           fiscalizado_por,
-          registrado_por:profiles!registrado_por (apelido, nome),
-          fiscalizado_por:profiles!fiscalizado_por (apelido, nome),
-          quarto:rooms (id, nome),
-          area_comum:areas_comuns (id, nome)
+          perfil_registrado:profiles!registrado_por (apelido, nome),
+          perfil_fiscalizado:profiles!fiscalizado_por (apelido, nome)
         `)
-        .eq('data', hojeStr);
+        .eq('semana_ano', semana_ano)
+        .eq('ano', ano)
+        .order('data', { ascending: true });
 
       if (errTarefas) {
-        console.error('[QuadroPontosScreen] Erro ao buscar tarefas do dia:', errTarefas);
+        console.error('[QuadroPontosScreen] Erro ao buscar tarefas da semana:', errTarefas);
+      }
+
+      // Fallback para nomes/apelidos de profiles via busca direta caso o join retorne nulo
+      const userIdsParaBuscar = Array.from(
+        new Set(
+          (tarefasDb || [])
+            .flatMap((t: any) => [t.registrado_por, t.fiscalizado_por])
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        )
+      );
+
+      let profilesMap = new Map<string, { apelido?: string | null; nome?: string | null }>();
+      if (userIdsParaBuscar.length > 0) {
+        try {
+          const { data: profs } = await supabase
+            .from('profiles')
+            .select('id, apelido, nome')
+            .in('id', userIdsParaBuscar);
+          if (profs) {
+            profs.forEach((p: any) => profilesMap.set(p.id, p));
+          }
+        } catch {
+          // Fallback silencioso caso RLS de anon
+        }
       }
 
       const itemFiscal = itens.find((i) => (i.area_comum?.nome || '').trim().toLowerCase() === 'halls');
       const penalidadeSemana = itens[0]?.penalidade_atribuida || 'Pagar 1 caixa de cerveja para a casa';
+
+      const tarefasSemana: TarefaDiariaItem[] = (tarefasDb || []).map((t: any) => {
+        const itemEscala = itens.find(
+          (i) => i.quarto_id === t.quarto_id && i.area_comum_id === t.area_comum_id
+        ) || itens.find((i) => i.quarto_id === t.quarto_id);
+
+        const profReg = profilesMap.get(t.registrado_por);
+        const profFisc = profilesMap.get(t.fiscalizado_por);
+
+        return {
+          ...t,
+          enviado_por_apelido:
+            t.perfil_registrado?.apelido ||
+            t.perfil_registrado?.nome ||
+            profReg?.apelido ||
+            profReg?.nome ||
+            null,
+          fiscalizado_por_apelido:
+            t.perfil_fiscalizado?.apelido ||
+            t.perfil_fiscalizado?.nome ||
+            profFisc?.apelido ||
+            profFisc?.nome ||
+            null,
+          quarto: itemEscala?.quarto || t.quarto,
+          area_comum: itemEscala?.area_comum || t.area_comum,
+          isFiscal: (itemEscala?.area_comum?.nome || '').trim().toLowerCase() === 'halls',
+        };
+      });
 
       const quadroConsolidado: QuadroSemanalConsolidado = {
         semana_ano,
@@ -315,12 +374,8 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         quarto_fiscal_id: itemFiscal?.quarto_id || null,
         quarto_fiscal_nome: itemFiscal?.quarto?.nome || null,
         itens,
-        tarefas_hoje: (tarefasDb || []).map((t: any) => ({
-          ...t,
-          enviado_por_apelido: t.registrado_por?.apelido || t.registrado_por?.nome || null,
-          fiscalizado_por_apelido: t.fiscalizado_por?.apelido || t.fiscalizado_por?.nome || null,
-          isFiscal: (t.area_comum?.nome || '').trim().toLowerCase() === 'halls',
-        })),
+        tarefas_hoje: tarefasSemana.filter((t) => t.data === hojeStr),
+        tarefas_semana: tarefasSemana,
         precisa_inicializacao,
       };
 
@@ -376,7 +431,17 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
   const moradorQuartoId = profile?.quarto_id;
   const minhaEscala = quadro?.itens.find((i) => i.quarto_id === moradorQuartoId);
   const minhaTarefaHoje = quadro?.tarefas_hoje.find((t) => t.quarto_id === moradorQuartoId);
-  const souFiscal = moradorQuartoId === quadro?.quarto_fiscal_id || isAdmin;
+  const souFiscal = Boolean(
+    (moradorQuartoId && quadro?.quarto_fiscal_id && moradorQuartoId === quadro.quarto_fiscal_id) ||
+      isAdmin
+  );
+
+  // Redireciona da aba Fiscal caso o usuário não pertença ao quarto do Halls nem seja Admin
+  useEffect(() => {
+    if (activeTab === 'fiscal' && !souFiscal) {
+      setActiveTab('quadro');
+    }
+  }, [activeTab, souFiscal]);
 
   // Contador de pendências para o fiscal
   const pendenciasFiscal = quadro?.tarefas_hoje.filter(
@@ -411,7 +476,8 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         day: '2-digit',
       }).format(new Date());
 
-      const { semana_ano, ano } = getIsoWeekAndYear();
+      const semana_ano = minhaEscala.semana_ano || quadro?.semana_ano || getIsoWeekAndYear().semana_ano;
+      const ano = minhaEscala.ano || quadro?.ano || getIsoWeekAndYear().ano;
 
       // Upsert direto no Supabase: o trigger trg_validate_and_apply_faxina_rules valida que o morador
       // só envia para seu próprio quarto (ou admin), atribuindo registrado_por automaticamente.
@@ -442,6 +508,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       alert(err.message || 'Erro ao enviar foto.');
     } finally {
       setUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -686,6 +753,13 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
 
   // Permite acesso ao Admin tanto para profile.role === 'admin' quanto quando a casa precisa de inicialização
   const podeAcessarAdmin = isAdmin || quadro?.precisa_inicializacao || !quadro?.itens || quadro.itens.length === 0;
+  const hojeStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  const diasDaSemana = quadro ? getDiasDaSemanaIso(quadro.semana_ano, quadro.ano) : [];
 
   return (
     <div className="pb-16 max-w-lg mx-auto">
@@ -847,19 +921,21 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           )}
         </button>
 
-        <button
-          onClick={() => setActiveTab('fiscal')}
-          className={`flex-1 py-2 rounded-lg transition-colors text-center relative ${
-            activeTab === 'fiscal' ? 'bg-forest text-white shadow-xs font-semibold' : 'text-muted hover:text-ink'
-          }`}
-        >
-          Fiscal (Halls)
-          {souFiscal && pendenciasFiscal > 0 && (
-            <span className="ml-1.5 px-1.5 py-0.2 rounded-full bg-clay text-white text-[10px] font-bold">
-              {pendenciasFiscal}
-            </span>
-          )}
-        </button>
+        {souFiscal && (
+          <button
+            onClick={() => setActiveTab('fiscal')}
+            className={`flex-1 py-2 rounded-lg transition-colors text-center relative ${
+              activeTab === 'fiscal' ? 'bg-forest text-white shadow-xs font-semibold' : 'text-muted hover:text-ink'
+            }`}
+          >
+            Fiscal (Halls)
+            {pendenciasFiscal > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.2 rounded-full bg-clay text-white text-[10px] font-bold">
+                {pendenciasFiscal}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {/* ========================================================================= */}
@@ -955,17 +1031,116 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                   </div>
                 </div>
 
+                {/* Barra dos 7 Dias da Semana ISO (Seg a Dom) */}
+                <div className="mt-3 pt-3 border-t border-line/60">
+                  <div className="flex items-center justify-between text-[10px] text-muted mb-1.5">
+                    <span className="font-semibold uppercase tracking-wider">Dias da Semana</span>
+                    <span>Toque no dia enviado para ver a foto</span>
+                  </div>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {diasDaSemana.map((dia) => {
+                      const tarefaDia = quadro.tarefas_semana.find(
+                        (t) => t.quarto_id === item.quarto_id && t.data === dia.data
+                      );
+                      const temFoto = Boolean(
+                        tarefaDia?.status === 'cumprido' && tarefaDia?.fotos_comprovacao?.[0]
+                      );
+                      const foiReprovado = tarefaDia?.fiscal_status === 'reprovado';
+                      const faltouDia = tarefaDia?.status === 'faltou';
+                      const isHoje = dia.data === hojeStr;
+
+                      let cellStyle = 'bg-cream/30 border-line/60 text-muted opacity-70';
+                      if (temFoto) {
+                        cellStyle = foiReprovado
+                          ? 'border-clay bg-clay-tint text-clay hover:bg-clay-tint/80 cursor-pointer shadow-2xs'
+                          : 'bg-mint/50 border-forest/40 text-forest hover:bg-mint cursor-pointer shadow-2xs';
+                      } else if (faltouDia) {
+                        cellStyle = 'bg-clay-tint/50 border-clay/30 text-clay';
+                      } else if (isHoje) {
+                        cellStyle = 'border-forest/40 bg-cream/60 text-ink font-semibold';
+                      }
+
+                      return (
+                        <button
+                          key={dia.data}
+                          type="button"
+                          disabled={!temFoto}
+                          onClick={() => {
+                            if (temFoto && tarefaDia) {
+                              setTarefaDiaSelecionada({
+                                tarefa: {
+                                  ...tarefaDia,
+                                  quarto: tarefaDia.quarto || item.quarto,
+                                  area_comum: tarefaDia.area_comum || item.area_comum,
+                                },
+                                dia,
+                              });
+                            }
+                          }}
+                          title={
+                            temFoto
+                              ? `${dia.nomeCompleto} (${dia.diaMes}): Ver foto enviada por ${tarefaDia?.enviado_por_apelido || 'Morador'}`
+                              : faltouDia
+                              ? `${dia.nomeCompleto} (${dia.diaMes}): Faltou`
+                              : `${dia.nomeCompleto} (${dia.diaMes}): Sem foto registrada`
+                          }
+                          className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl border text-center transition-all ${cellStyle}`}
+                        >
+                          <span className="text-[10px] font-bold leading-none">{dia.sigla}</span>
+                          <span className="text-[9px] opacity-80 mt-0.5 leading-none">{dia.diaMes}</span>
+                          <div className="mt-1 h-3.5 flex items-center justify-center">
+                            {temFoto ? (
+                              foiReprovado ? (
+                                <AlertTriangle className="w-3 h-3 text-clay" />
+                              ) : (
+                                <Camera className="w-3 h-3 text-forest" />
+                              )
+                            ) : faltouDia ? (
+                              <X className="w-3 h-3 text-clay" />
+                            ) : isHoje ? (
+                              <Clock className="w-3 h-3 text-forest/70" />
+                            ) : (
+                              <span className="w-1 h-1 rounded-full bg-line" />
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Status da Faxina de Hoje */}
-                <div className="mt-3 pt-3 border-t border-line/60 flex items-center justify-between text-xs">
+                <div className="mt-3 pt-2.5 border-t border-line/60 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-1.5">
                     {tarefa?.status === 'cumprido' ? (
-                      <span className="text-forest flex items-center gap-1 font-medium">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Foto enviada
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (tarefa.fotos_comprovacao?.[0]) {
+                            const diaHoje = diasDaSemana.find((d) => d.data === hojeStr) || {
+                              sigla: 'Seg',
+                              nomeCompleto: 'Hoje',
+                              data: hojeStr,
+                              diaMes: hojeStr.slice(5).split('-').reverse().join('/'),
+                            };
+                            setTarefaDiaSelecionada({
+                              tarefa: {
+                                ...tarefa,
+                                quarto: tarefa.quarto || item.quarto,
+                                area_comum: tarefa.area_comum || item.area_comum,
+                              },
+                              dia: diaHoje,
+                            });
+                          }
+                        }}
+                        className="text-forest flex items-center gap-1 font-medium hover:underline text-left"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Foto enviada hoje</span>
                         {tarefa.enviado_por_apelido && (
                           <span className="text-muted text-[11px]">({tarefa.enviado_por_apelido})</span>
                         )}
-                      </span>
+                      </button>
                     ) : tarefa?.status === 'faltou' ? (
                       <span className="text-clay flex items-center gap-1 font-medium">
                         <AlertCircle className="w-3.5 h-3.5" />
@@ -1072,8 +1247,30 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                   Comprovação da Faxina de Hoje
                 </h4>
 
+                {/* Input de arquivo sempre montado para permitir envio inicial e substituição de foto */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+
                 {minhaTarefaHoje?.status === 'cumprido' ? (
                   <div className="space-y-3">
+                    <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300/80 text-xs text-ink space-y-1">
+                      <div className="flex items-center gap-2 font-bold text-amber-900">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          {minhaTarefaHoje.enviado_por_apelido || 'Um morador do seu quarto'} já enviou a foto de hoje!
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-800 leading-relaxed pl-6">
+                        A comprovação diária do seu quarto já está registrada abaixo. Se desejar, você pode enviar uma nova foto para substituí-la.
+                      </p>
+                    </div>
+
                     <div className="p-3 rounded-xl bg-mint/40 border border-forest/30 text-xs text-forest flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
                       <span>
@@ -1110,20 +1307,11 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                       disabled={uploading}
                     >
                       <RotateCcw className="w-3.5 h-3.5 mr-1.5 inline" />
-                      Tirar outra foto (atualizar)
+                      {uploading ? 'Substituindo foto...' : 'Substituir foto enviada'}
                     </Button>
                   </div>
                 ) : (
                   <div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
-
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -1377,11 +1565,123 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
       )}
 
       {/* ========================================================================= */}
+      {/* MODAL DE DETALHES DA FOTO DO DIA (SEMANA)                                 */}
+      {/* ========================================================================= */}
+      {tarefaDiaSelecionada && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/70 backdrop-blur-xs"
+          onClick={() => setTarefaDiaSelecionada(null)}
+        >
+          <div
+            className="bg-surface w-full max-w-md rounded-2xl p-5 border border-line shadow-xl space-y-3.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cream border border-line flex items-center justify-center shrink-0">
+                  {getAreaIcon(tarefaDiaSelecionada.tarefa.area_comum?.nome || '')}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-ink">
+                    {tarefaDiaSelecionada.tarefa.quarto?.nome} · {tarefaDiaSelecionada.tarefa.area_comum?.nome}
+                  </h3>
+                  <p className="text-xs text-muted">
+                    {tarefaDiaSelecionada.dia.nomeCompleto} ({tarefaDiaSelecionada.dia.diaMes})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTarefaDiaSelecionada(null)}
+                className="text-muted hover:text-ink p-1"
+                aria-label="Fechar detalhes da foto"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {tarefaDiaSelecionada.tarefa.fotos_comprovacao?.[0] && (
+              <div className="relative aspect-video rounded-xl overflow-hidden border border-line bg-ink/5">
+                <img
+                  src={tarefaDiaSelecionada.tarefa.fotos_comprovacao[0]}
+                  alt={`Comprovação ${tarefaDiaSelecionada.tarefa.quarto?.nome} em ${tarefaDiaSelecionada.dia.diaMes}`}
+                  className="w-full h-full object-cover cursor-pointer"
+                  onClick={() => setImagemExpandida(tarefaDiaSelecionada.tarefa.fotos_comprovacao[0])}
+                />
+                <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-ink/75 text-white text-[10px] backdrop-blur">
+                  Toque para ampliar
+                </div>
+              </div>
+            )}
+
+            <div className="p-3 rounded-xl bg-cream/50 border border-line text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Enviada por:</span>
+                <span className="font-bold text-ink">
+                  {tarefaDiaSelecionada.tarefa.enviado_por_apelido || 'Morador do quarto'}
+                </span>
+              </div>
+
+              {tarefaDiaSelecionada.tarefa.enviado_em && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted">Horário do envio:</span>
+                  <span className="font-medium text-ink">
+                    {new Date(tarefaDiaSelecionada.tarefa.enviado_em).toLocaleTimeString('pt-BR', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-1 border-t border-line/60">
+                <span className="text-muted">Parecer do Fiscal (Halls):</span>
+                {tarefaDiaSelecionada.tarefa.fiscal_status === 'aprovado' ? (
+                  <Tag tone="green">Aprovado pelo Halls</Tag>
+                ) : tarefaDiaSelecionada.tarefa.fiscal_status === 'reprovado' ? (
+                  <Tag tone="alert">Reprovado</Tag>
+                ) : tarefaDiaSelecionada.tarefa.fiscal_status === 'omitido' ? (
+                  <Tag tone="alert">Fiscal Omitiu</Tag>
+                ) : (
+                  <Tag tone="neutral">Aguardando Fiscal</Tag>
+                )}
+              </div>
+            </div>
+
+            {tarefaDiaSelecionada.tarefa.fiscal_status === 'reprovado' && (
+              <div className="p-3 rounded-xl bg-clay-tint/50 border border-clay/30 text-xs text-clay space-y-2">
+                {tarefaDiaSelecionada.tarefa.fiscal_observacao && (
+                  <p>
+                    <strong>Justificativa do Fiscal:</strong> {tarefaDiaSelecionada.tarefa.fiscal_observacao}
+                  </p>
+                )}
+                {tarefaDiaSelecionada.tarefa.fiscal_foto_url && (
+                  <div>
+                    <span className="block text-[11px] font-semibold mb-1">Foto de contraprova do Fiscal:</span>
+                    <img
+                      src={tarefaDiaSelecionada.tarefa.fiscal_foto_url}
+                      alt="Contraprova do Fiscal"
+                      className="w-full h-36 object-cover rounded-lg border border-clay/30 cursor-pointer"
+                      onClick={() => setImagemExpandida(tarefaDiaSelecionada.tarefa.fiscal_foto_url!)}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Button variant="outline" full onClick={() => setTarefaDiaSelecionada(null)}>
+              Fechar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* MODAL DE FOTO EXPANDIDA EM TELA CHEIA                                     */}
       {/* ========================================================================= */}
       {imagemExpandida && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/90 backdrop-blur"
+          className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-ink/90 backdrop-blur"
           onClick={() => setImagemExpandida(null)}
         >
           <div className="relative max-w-lg w-full">

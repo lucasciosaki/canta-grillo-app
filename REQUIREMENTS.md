@@ -211,6 +211,9 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - As regras são persistidas na tabela `public.regras_quadro_pontos` e sincronizadas em tempo real via Supabase Realtime.
 - **Exibição na Interface:**
   - Na aba "Quadro Geral", exibe-se um card expansível/recolhível com a lista dos 7 níveis de punição.
+  - Em cada um dos 6 cards de quarto na aba "Quadro Geral", exibe-se a **barra dos 7 dias da semana ISO (`Seg` a `Dom`)** mostrando em quais dias o quarto enviou foto, faltou ou está pendente. Ao clicar em um dia com foto enviada, abre-se o **Modal de Foto do Dia** com a imagem enviada, apelido do autor, horário e parecer do Fiscal.
+  - Na aba "Minha Função", caso um colega de quarto já tenha enviado a foto do dia, exibe-se um aviso explícito identificando quem enviou (por apelido) e permitindo substituir a foto enviada a qualquer momento antes do corte.
+  - A aba **"Fiscal (Halls)"** na barra de navegação superior é exibida exclusivamente para os moradores cujo quarto está escalado na função **Halls** na semana vigente ou para **Administradores** (para os demais quartos são exibidas apenas as abas `Quadro Geral` e `Minha Função`).
   - No card de cada quarto com $\ge 2$ faltas, exibe-se em destaque a punição específica correspondente ao total de faltas do quarto.
 - **Governança, Políticas RLS e Automação 100% Database-First:**
   - **Eliminação de Servidor Intermediário em Produção:** Todas as validações, cálculo de faltas, rodízio circular e rotinas cron rodam dentro do PostgreSQL no Supabase.
