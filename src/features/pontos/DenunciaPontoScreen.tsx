@@ -1,15 +1,15 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabaseClient';
 import { PageTitle, Button } from '../../components/ui';
-import { Camera, AlertCircle, CheckCircle2, RotateCcw, Clock } from 'lucide-react';
+import { Camera, AlertCircle, CheckCircle2, RotateCcw, Clock, Check, Users } from 'lucide-react';
+import { uploadImageToBucket } from '../../utils/imageStorage';
+import { getProfilesCached } from '../../utils/sessionDataCache';
 
 interface DenunciaPontoScreenProps {
   onBack: () => void;
   onSuccess?: () => void;
 }
-
-import { uploadImageToBucket } from '../../utils/imageStorage';
 
 export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
   onBack,
@@ -21,9 +21,28 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
   const [fotoFile, setFotoFile] = useState<File | null>(null);
   const [localDescricao, setLocalDescricao] = useState('');
+  const [moradoresDisponiveis, setMoradoresDisponiveis] = useState<any[]>([]);
+  const [selectedAcusadosIds, setSelectedAcusadosIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [sucesso, setSucesso] = useState(false);
+
+  useEffect(() => {
+    getProfilesCached('id, nome, apelido, avatar_url, role, ativo')
+      .then((perfis) => {
+        const outrosMoradores = (perfis || []).filter(
+          (p: any) => p.ativo && p.id !== user?.id && p.role !== 'externo'
+        );
+        setMoradoresDisponiveis(outrosMoradores);
+      })
+      .catch((err) => console.error('[DenunciaPontoScreen] Erro ao carregar moradores:', err));
+  }, [user?.id]);
+
+  const toggleAcusado = (id: string) => {
+    setSelectedAcusadosIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
 
   // Nome do autor respeitando rigorosamente o apelido da casa
   const apelidoRelator = profile?.apelido || profile?.nome?.split(' ')[0] || 'Morador';
@@ -99,6 +118,22 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
             morador_id: user.id,
           })
           .maybeSingle();
+
+        // 4. Se acusados foram selecionados, cadastra na tabela de acusações
+        if (selectedAcusadosIds.length > 0) {
+          const acusacoes = selectedAcusadosIds.map((acusadoId) => ({
+            ponto_id: pontoCriado.id,
+            acusado_id: acusadoId,
+            acusador_id: user.id,
+            status: 'pendente',
+          }));
+          const { error: acusError } = await supabase
+            .from('pontos_bagunca_acusacoes')
+            .insert(acusacoes);
+          if (acusError) {
+            console.error('[DenunciaPontoScreen] Erro ao cadastrar acusações:', acusError);
+          }
+        }
       }
 
       setSucesso(true);
@@ -115,6 +150,7 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
     setFotoPreview(null);
     setFotoFile(null);
     setLocalDescricao('');
+    setSelectedAcusadosIds([]);
     setSucesso(false);
     setErro(null);
   };
@@ -235,6 +271,55 @@ export const DenunciaPontoScreen: React.FC<DenunciaPontoScreenProps> = ({
             className="w-full px-3.5 py-3 rounded-xl border border-line bg-surface text-ink text-sm placeholder:text-muted/60 focus:outline-none focus:border-forest shadow-2xs"
           />
         </div>
+
+        {/* Acusação Múltipla Opcional */}
+        {moradoresDisponiveis.length > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-ink uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-forest" />
+                <span>Quem você acha que foi? <span className="text-muted font-normal text-[11px] lowercase">(opcional)</span></span>
+              </label>
+              {selectedAcusadosIds.length > 0 && (
+                <span className="text-[11px] font-bold text-forest">
+                  {selectedAcusadosIds.length} selecionado{selectedAcusadosIds.length > 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-muted mb-2 leading-relaxed">
+              Os acusados serão notificados com urgência e terão 24h para assumir ou declarar inocência.
+            </p>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-44 overflow-y-auto p-0.5">
+              {moradoresDisponiveis.map((m) => {
+                const isSelected = selectedAcusadosIds.includes(m.id);
+                const nomeDisplay = m.apelido || m.nome;
+                return (
+                  <button
+                    type="button"
+                    key={m.id}
+                    onClick={() => toggleAcusado(m.id)}
+                    className={`p-2 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                      isSelected
+                        ? 'border-forest bg-forest/10 text-forest font-bold shadow-2xs'
+                        : 'border-line bg-surface text-ink hover:border-forest/40'
+                    }`}
+                  >
+                    <div className="w-7 h-7 rounded-full bg-mint text-forest font-bold text-xs flex items-center justify-center shrink-0 overflow-hidden">
+                      {m.avatar_url ? (
+                        <img src={m.avatar_url} alt={nomeDisplay} className="w-full h-full object-cover" />
+                      ) : (
+                        nomeDisplay.charAt(0).toUpperCase()
+                      )}
+                    </div>
+                    <span className="text-xs truncate flex-1">{nomeDisplay}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-forest shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Identificação do Relator */}
         <div className="p-3 rounded-xl bg-surface border border-line flex items-center justify-between text-xs">

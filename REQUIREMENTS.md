@@ -163,23 +163,46 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
 - Os moradores pagam um valor mensal único e fixo estipulado pela república.
 - A Frente Financeiro é responsável por auditar os pagamentos e registrar a quitação.
 
-### RN04 - Abertura de Ponto de Bagunça, Regra de 24h com Blur, Discussão e Assunção de Culpa
-- **Abertura com Foto Obrigatória:** Qualquer morador ativo pode abrir um Ponto de Bagunça anexando obrigatoriamente uma foto (comprimida no cliente para no máximo 1024px e qualidade 0.75) e indicando o que e onde está o item fora do lugar.
+### RN04 - Abertura de Ponto de Bagunça, Regra de 24h com Blur, Múltiplas Assunções, Acusações e Deliberação de Reunião
+- **Abertura com Foto e Acusações Iniciais:**
+  - Qualquer morador ativo pode abrir um Ponto de Bagunça anexando obrigatoriamente uma foto (comprimida no cliente para no máximo 1024px e qualidade 0.75) e indicando o que e onde está o item fora do lugar.
+  - O relator pode selecionar opcionalmente 1 ou mais moradores acusados no momento da abertura do ponto (`pontos_bagunca_acusacoes`), através de chips interativos.
+- **Carrossel da Home: 2 Cards por Visualização e Permanência de 24 Horas:**
+  - O carrossel da Home organiza os pontos de bagunça em cards com largura fixa calculada para exatamente 2 cards visíveis lado a lado (`w-[calc((100%-12px)/2)]` com scroll horizontal snap-start).
+  - **Permanência de 24h:** O ponto permanece obrigatoriamente visível no carrossel por 24 horas integrais a partir de `created_at`, independentemente de já ter sido assumido por 1 ou mais moradores. Isso permite que outros responsáveis também assumam e que a casa acompanhe o andamento.
 - **Mecânica de Blur e Visualização Individual:**
-  - O ponto de bagunça nasce no carrossel da Home com **filtro de desfoque (`blur`)** para todos os moradores da casa, exceto para o próprio relator (autor da denúncia).
-  - Cada morador deve tocar no card para abrir e ver a foto pela primeira vez. Ao clicar, o blur é removido permanentemente para aquele morador e a leitura é registrada na tabela `pontos_bagunca_visualizacoes`.
-- **Prazo Limite de 24 Horas e Penalidade Automática:**
-  - Cada ponto possui um cronômetro regressivo com prazo de **24 horas** a contar do momento da publicação (`created_at`).
-  - Todo morador ativo da casa que **não abrir a imagem dentro das primeiras 24 horas** recebe automaticamente **1 ponto de bagunça administrativo**. A verificação é executada via função do banco `public.verificar_penalidades_pontos_24h()`.
-  - **Resolução Antecipada:** Se o culpado assumir a infração antes de expirar as 24h (`status = 'assumida'`), o ponto é imediatamente encerrado e nenhum outro morador é penalizado por falta de visualização.
-- **Discussão em Tempo Real:** Cada Ponto de Bagunça possui uma thread de mensagens em tempo real (`mensagens_ponto_bagunca`), com identificação estrita pelo **apelido** dos moradores (nunca o nome civil).
-- **Assunção do Ponto e Cervejas:**
-  - O próprio morador responsável clica em "Assumir Ponto", imputando a infração a si mesmo.
-  - Ao acumular 7 pontos no mês civil, o sistema gera automaticamente 1 pendência de caixa de cerveja individual no nome do morador.
-  - A contagem de pontos individuais é zerada no primeiro dia de cada mês civil.
-- **Políticas RLS em `pontos_bagunca_visualizacoes`:**
-  - `SELECT`: Permitido para todos os usuários autenticados (`authenticated`).
-  - `INSERT`: Permitido para moradores ativos (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
+  - O ponto de bagunça nasce com filtro de desfoque (`blur-md`) para todos os moradores da casa, exceto para o relator.
+  - Ao tocar no card, a imagem é revelada e o evento é registrado na tabela associativa `pontos_bagunca_visualizacoes`.
+- **Dever Universal de Interação em 24h e Penalidade por Omissão:**
+  - Todo morador ativo da casa (exceto o relator) tem a obrigação de interagir dentro da janela de 24 horas: ou assumindo a responsabilidade ("Assumir Ponto / Fui Eu") ou declarando formalmente que não foi ele ("Sou Inocente" via RPC `declarar_inocencia_ponto_bagunca`).
+  - Moradores que não realizarem nenhuma das duas interações no período de 24h recebem automaticamente **1 ponto administrativo por omissão** na rotina agendada `verificar_penalidades_pontos_24h()`.
+- **Múltiplas Assunções de Culpa (`pontos_bagunca_culpados`):**
+  - Mais de um morador pode assumir a mesma infração de bagunça dentro das 24 horas via RPC `assumir_ponto_bagunca`. Cada assunção é registrada na tabela `pontos_bagunca_culpados`.
+  - **Geração de Cervejas:** O primeiro culpado atualiza `culpado_id` no ponto original. Cada culpado subsequente recebe uma linha espelho em `pontos_bagunca` com `status = 'assumida'`, garantindo que cada participante receba exatamente 1 ponto individual para a contagem de 7 cervejas via trigger `check_pontos_gerar_cerveja()`.
+- **Múltiplas Acusações na Discussão:**
+  - Qualquer morador ativo pode formular acusações contra outros moradores durante o debate em tempo real (`pontos_bagunca_acusacoes`).
+  - O trigger `trg_nova_acusacao_ponto` reseta a declaração prévia de inocência do acusado (`declarou_inocente = FALSE`) e dispara notificação in-app urgente para o acusado.
+- **Rotina Automática de Expiração das 24 Horas (`verificar_penalidades_pontos_24h`):**
+  - Executada a cada 15 minutos via `pg_cron`. Ao expirar as 24 horas de um ponto:
+    1. Aplica penalidade por omissão (+1 ponto) para todo morador ativo (exceto relator) que não assumiu nem declarou inocência (`declarou_inocente = TRUE`).
+    2. **Cenário 1 (≥1 culpado assumiu):** Atualiza o status para `'assumida'`.
+    3. **Cenário 2 (Nenhum culpado assumiu, mas há acusado(s) pendentes):** A culpa é atribuída ao primeiro acusado pendente que não declarou inocência (`culpado_id = acusado_id`), atualizando para `'assumida'`.
+    4. **Cenário 3 (Nenhum culpado assumiu e não há acusados pendentes):** O ponto não teve autor identificado e é movido para `status = 'reuniao'` para julgamento na Reunião Semanal da república.
+- **Deliberação de Pontos em Reunião pelo Administrador (`AprovacoesScreen.tsx`):**
+  - Aba dedicada "Pontos em Reunião" onde o Administrador consulta os pontos com `status = 'reuniao'`, relator, acusações, declarações de inocência e chat.
+  - **Opções de Deliberação:**
+    - **Anular Ponto:** Deleta o registro (`DELETE`) sem atribuição de culpa.
+    - **Atribuir Culpa com Regra das 2 Penalidades (`admin_atribuir_ponto_reuniao`):** Se a reunião deliberar quem foi o culpado, o morador é penalizado com **exatamente 2 pontos no total**. Se o morador mentiu declarando inocência antes das 24h (evitando a omissão), o RPC insere uma penalidade duplicada (2 pontos). Se o morador já havia sido punido por omissão às 24h, o RPC insere 1 ponto adicional, perfazendo $1 + 1 = 2$ pontos no total.
+- **TTL de 60 Dias para Pontos de Bagunça Antigos (`limpar_pontos_bagunca_antigos`):**
+  - Rotina agendada diária às 03:30 BRT via `pg_cron` expurga pontos resolvidos (`status = 'assumida'`) com mais de 60 dias de conclusão, deletando mensagens, fotos e associações em cascata.
+  - As caixas de cerveja geradas (`caixas_cerveja`) permanecem intactas e auditadas separadamente.
+  - As consultas client-side (`useNotifications.ts`) filtram os pontos para o limite de 60 dias (`limite60Dias`).
+- **Discussão em Tempo Real:** Cada Ponto de Bagunça possui uma thread de mensagens em tempo real (`mensagens_ponto_bagunca`), com identificação estrita pelo **apelido** dos moradores.
+- **Políticas RLS em `pontos_bagunca_*`:**
+  - `pontos_bagunca`: `SELECT` liberado para autenticados; `INSERT` para morador ativo (`relator_id = auth.uid()`); `UPDATE` e `DELETE` restritos ao Administrador e funções `SECURITY DEFINER`.
+  - `pontos_bagunca_visualizacoes`: `SELECT` liberado; `INSERT` próprio (`morador_id = auth.uid()`); `UPDATE` próprio para alteração do status de inocência (`morador_id = auth.uid()`).
+  - `pontos_bagunca_acusacoes`: `SELECT` liberado; `INSERT` para morador ativo acusando outro morador ativo (`acusador_id = auth.uid() AND acusador_id != acusado_id`); `DELETE` para o próprio acusador ou Administrador.
+  - `pontos_bagunca_culpados`: `SELECT` liberado; `INSERT` para morador ativo assumindo a si mesmo (`morador_id = auth.uid()`) ou via RPC `assumir_ponto_bagunca`; `DELETE` restrito ao Administrador.
 
 ### RN05 - Times de Limpeza por Quartos, Rodízio Linear e Fiscalização do Halls
 - **6 Funções e 6 Quartos da Casa:**

@@ -4,7 +4,7 @@ export interface PontoBagunca {
   culpado_id: string | null;
   foto_url: string;
   local_descricao: string;
-  status: 'aberta' | 'assumida';
+  status: 'aberta' | 'assumida' | 'reuniao';
   created_at: string;
   assumida_em?: string | null;
   relator?: {
@@ -17,6 +17,8 @@ export interface PontoBagunca {
     nome: string;
     apelido: string | null;
   } | null;
+  culpados?: CulpadoPontoBagunca[];
+  acusacoes?: AcusacaoPontoBagunca[];
 }
 
 export interface MensagemPontoBagunca {
@@ -36,6 +38,43 @@ export interface VisualizacaoPonto {
   ponto_id: string;
   morador_id: string;
   visualizado_em: string;
+  declarou_inocente?: boolean;
+  inocente_em?: string | null;
+}
+
+export interface AcusacaoPontoBagunca {
+  id: string;
+  ponto_id: string;
+  acusado_id: string;
+  acusador_id: string;
+  status: 'pendente' | 'inocente' | 'assumido';
+  created_at: string;
+  respondido_em?: string | null;
+  acusado?: {
+    id: string;
+    nome: string;
+    apelido: string | null;
+    avatar_url?: string | null;
+  } | null;
+  acusador?: {
+    id: string;
+    nome: string;
+    apelido: string | null;
+    avatar_url?: string | null;
+  } | null;
+}
+
+export interface CulpadoPontoBagunca {
+  id: string;
+  ponto_id: string;
+  morador_id: string;
+  assumido_em: string;
+  morador?: {
+    id: string;
+    nome: string;
+    apelido: string | null;
+    avatar_url?: string | null;
+  } | null;
 }
 
 export interface Prazo24hInfo {

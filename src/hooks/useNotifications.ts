@@ -192,9 +192,11 @@ export function useNotifications() {
         }
         if (tablesToRefresh!.has('pontos_bagunca')) {
           refreshTasks.push((async () => {
+            const limite60Dias = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
             const { data } = await supabase
               .from('pontos_bagunca')
               .select('id, relator_id, culpado_id, local_descricao, status, created_at')
+              .gte('created_at', limite60Dias)
               .order('created_at', { ascending: false });
             if (data) currentRaw.pontos = data;
           })());
@@ -343,6 +345,7 @@ export function useNotifications() {
         await Promise.all(refreshTasks);
       } else {
         // Carga completa inicial ou forceRefresh
+        const limite60Dias = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
         const [
           perfisData,
           pontosRes,
@@ -362,7 +365,7 @@ export function useNotifications() {
           dbNotifsRes,
         ] = await Promise.all([
           getProfilesCached(),
-          supabase.from('pontos_bagunca').select('id, relator_id, culpado_id, local_descricao, status, created_at').order('created_at', { ascending: false }),
+          supabase.from('pontos_bagunca').select('id, relator_id, culpado_id, local_descricao, status, created_at').gte('created_at', limite60Dias).order('created_at', { ascending: false }),
           supabase.from('pontos_bagunca_visualizacoes').select('ponto_id').eq('morador_id', user.id),
           supabase.from('mensagens_ponto_bagunca').select('id, ponto_bagunca_id, autor_id, conteudo, enviada_em').order('enviada_em', { ascending: false }).limit(20),
           getFrontsCached(),
@@ -867,6 +870,18 @@ export function useNotifications() {
           window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
         }
         triggerGranularRefresh('mensagens_ponto_bagunca');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_acusacoes' }, (payload: any) => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
+        }
+        triggerGranularRefresh('pontos_bagunca');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_culpados' }, (payload: any) => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('canta-grillo:ponto-realtime', { detail: payload }));
+        }
+        triggerGranularRefresh('pontos_bagunca');
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escala_semanal_faxina' }, () =>
         triggerGranularRefresh('escala_semanal_faxina')

@@ -40,7 +40,10 @@ function MainApp() {
   const [stack, setStack] = useState<Screen[]>(['home']);
   const [pontosBagunca, setPontosBagunca] = useState<PontoBagunca[]>([]);
   const [visualizacoesIds, setVisualizacoesIds] = useState<Set<string>>(new Set());
+  const [inocenciasIds, setInocenciasIds] = useState<Set<string>>(new Set());
+  const [perfisLista, setPerfisLista] = useState<any[]>([]);
   const [mensagensMap, setMensagensMap] = useState<Record<string, MensagemPontoBagunca[]>>({});
+  const [adminInitialTab, setAdminInitialTab] = useState<'pendentes' | 'moradores' | 'convidados' | 'pontos_reuniao'>('pendentes');
 
   const [minhaMarcaHoje, setMinhaMarcaHoje] = useState<string | null>(null);
   const [totalMisturasHoje, setTotalMisturasHoje] = useState<number | null>(null);
@@ -84,6 +87,9 @@ function MainApp() {
     } else if (targetScreen === 'cervejas') {
       setStack(['casa', 'cervejas']);
     } else if (targetScreen === 'aprovacoes') {
+      if (params?.aba) {
+        setAdminInitialTab(params.aba as any);
+      }
       setStack(['casa', 'aprovacoes']);
     }
   };
@@ -94,28 +100,35 @@ function MainApp() {
   const carregarPontosBagunca = useCallback(async () => {
     try {
       const [pontosRes, perfisData, visRes] = await Promise.all([
-        // 1. Pontos abertos (colunas explícitas)
+        // 1. Pontos abertos com culpados e acusações (colunas explícitas)
         supabase
           .from('pontos_bagunca')
-          .select('id, relator_id, culpado_id, local_descricao, foto_url, status, created_at')
+          .select(`
+            id, relator_id, culpado_id, local_descricao, foto_url, status, created_at, assumida_em,
+            culpados:pontos_bagunca_culpados(id, morador_id, assumido_em),
+            acusacoes:pontos_bagunca_acusacoes(id, acusado_id, acusador_id, status, created_at, respondido_em)
+          `)
           .eq('status', 'aberta')
           .order('created_at', { ascending: false }),
 
         // 2. Perfis para mapeamento de apelido (com cache em memória RAM)
-        getProfilesCached('id, nome, apelido'),
+        getProfilesCached('id, nome, apelido, avatar_url, role, ativo'),
 
-        // 3. Visualizações do morador logado
+        // 3. Visualizações e declaração de inocência do morador logado
         user?.id
           ? supabase
               .from('pontos_bagunca_visualizacoes')
-              .select('ponto_id')
+              .select('ponto_id, declarou_inocente, inocente_em')
               .eq('morador_id', user.id)
           : Promise.resolve({ data: [] }),
       ]);
 
-      const pontosRaw = pontosRes.data || [];
-      const perfisMap: Record<string, { id: string; nome: string; apelido: string | null }> = {};
-      (perfisData || []).forEach((p: any) => {
+      const pontosRaw = (pontosRes.data || []) as any[];
+      const perfisList = (perfisData || []) as any[];
+      setPerfisLista(perfisList);
+
+      const perfisMap: Record<string, { id: string; nome: string; apelido: string | null; avatar_url?: string | null }> = {};
+      perfisList.forEach((p: any) => {
         perfisMap[p.id] = p;
       });
 
@@ -123,12 +136,23 @@ function MainApp() {
         ...p,
         relator: perfisMap[p.relator_id] || null,
         culpado: p.culpado_id ? perfisMap[p.culpado_id] || null : null,
+        culpados: (p.culpados || []).map((c: any) => ({
+          ...c,
+          morador: perfisMap[c.morador_id] || null,
+        })),
+        acusacoes: (p.acusacoes || []).map((a: any) => ({
+          ...a,
+          acusado: perfisMap[a.acusado_id] || null,
+          acusador: perfisMap[a.acusador_id] || null,
+        })),
       }));
 
       setPontosBagunca(formatados);
 
       if (visRes.data) {
-        setVisualizacoesIds(new Set((visRes.data as any[]).map((v) => v.ponto_id)));
+        const visRows = visRes.data as any[];
+        setVisualizacoesIds(new Set(visRows.map((v) => v.ponto_id)));
+        setInocenciasIds(new Set(visRows.filter((v) => Boolean(v.declarou_inocente)).map((v) => v.ponto_id)));
       }
 
       // 4. Mensagens filtradas estritamente para os pontos atualmente abertos
@@ -210,6 +234,15 @@ function MainApp() {
       .channel('pontos-bagunca-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca' }, (payload) =>
         handleRealtimePontoEvent(payload)
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_culpados' }, () =>
+        agendarCarregarPontosBagunca(300)
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_acusacoes' }, () =>
+        agendarCarregarPontosBagunca(300)
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pontos_bagunca_visualizacoes' }, () =>
+        agendarCarregarPontosBagunca(300)
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_ponto_bagunca' }, () =>
         agendarCarregarPontosBagunca(600)
@@ -386,25 +419,64 @@ function MainApp() {
     }
   };
 
-  // Morador assume a culpa do ponto de bagunça
+  // Morador assume a culpa do ponto de bagunça (RPC com suporte a múltiplas assunções)
   const handleAssumirPonto = async (id: string) => {
     if (!user?.id) return;
 
-    // Otimista: remove do carrossel de abertos
-    setPontosBagunca((prev) => prev.filter((p) => p.id !== id));
+    try {
+      const { error } = await supabase.rpc('assumir_ponto_bagunca', {
+        p_ponto_id: id,
+      });
 
-    const { error } = await supabase
-      .from('pontos_bagunca')
-      .update({
-        status: 'assumida',
-        culpado_id: user.id,
-        assumida_em: new Date().toISOString(),
-      })
-      .eq('id', id);
+      if (error) {
+        alert('Erro ao assumir ponto: ' + error.message);
+      }
+      await carregarPontosBagunca();
+    } catch (err: any) {
+      alert('Erro ao assumir ponto: ' + (err.message || err));
+      await carregarPontosBagunca();
+    }
+  };
 
-    if (error) {
-      alert('Erro ao assumir ponto: ' + error.message);
-      carregarPontosBagunca();
+  // Morador declara ser inocente do ponto de bagunça
+  const handleDeclararInocencia = async (id: string) => {
+    if (!user?.id) return;
+
+    try {
+      setInocenciasIds((prev) => new Set(prev).add(id));
+      const { error } = await supabase.rpc('declarar_inocencia_ponto_bagunca', {
+        p_ponto_id: id,
+      });
+
+      if (error) {
+        alert('Erro ao declarar inocência: ' + error.message);
+      }
+      await carregarPontosBagunca();
+    } catch (err: any) {
+      alert('Erro ao declarar inocência: ' + (err.message || err));
+      await carregarPontosBagunca();
+    }
+  };
+
+  // Morador acusa outro morador na discussão do ponto
+  const handleAcusarMorador = async (pontoId: string, acusadoId: string) => {
+    if (!user?.id) return;
+
+    try {
+      const { error } = await supabase.from('pontos_bagunca_acusacoes').insert({
+        ponto_id: pontoId,
+        acusado_id: acusadoId,
+        acusador_id: user.id,
+        status: 'pendente',
+      });
+
+      if (error) {
+        alert('Erro ao acusar morador: ' + error.message);
+      }
+      await carregarPontosBagunca();
+    } catch (err: any) {
+      alert('Erro ao acusar morador: ' + (err.message || err));
+      await carregarPontosBagunca();
     }
   };
 
@@ -483,8 +555,12 @@ function MainApp() {
               pontos={pontosBagunca}
               currentUserId={user?.id}
               visualizacoesIds={visualizacoesIds}
+              inocenciasIds={inocenciasIds}
+              perfis={perfisLista}
               onAbrirPonto={handleAbrirPonto}
               onAssumirPonto={handleAssumirPonto}
+              onDeclararInocencia={handleDeclararInocencia}
+              onAcusarMorador={handleAcusarMorador}
               onEnviarMensagem={handleEnviarMensagem}
               onNovaDenunciaClick={() => go('pontoBagunca')}
               mensagensMap={mensagensMap}
@@ -671,7 +747,7 @@ function MainApp() {
         );
 
       case 'aprovacoes':
-        return <AprovacoesScreen onBack={goBack} />;
+        return <AprovacoesScreen initialTab={adminInitialTab} onBack={goBack} />;
 
       case 'atas':
         return <AtasScreen onBack={goBack} />;

@@ -195,9 +195,26 @@ classDiagram
         +UUID culpado_id (FK Morador, Nulo se aberta)
         +String foto_url
         +String local_descricao
-        +Enum status [aberta, assumida]
+        +Enum status [aberta, assumida, reuniao]
         +DateTime created_at
         +DateTime assumida_em
+    }
+
+    class PONTOS_BAGUNCA_CULPADOS {
+        <<Entidade Associativa>>
+        +UUID id (PK)
+        +UUID ponto_id (FK)
+        +UUID morador_id (FK)
+        +DateTime assumido_em
+    }
+
+    class PONTOS_BAGUNCA_ACUSACOES {
+        <<Entidade Associativa>>
+        +UUID id (PK)
+        +UUID ponto_id (FK)
+        +UUID acusador_id (FK Morador)
+        +UUID acusado_id (FK Morador)
+        +DateTime criado_em
     }
 
     class MENSAGEM_DISCUSSAO_PONTO_BAGUNCA {
@@ -324,10 +341,10 @@ classDiagram
   - `baixada_em` (DateTime, Nulo se não paga): Data de confirmação da baixa.
   - `baixada_por` (FK para `USUARIO`, Nulo): Admin que auditou a baixa.
 - **`PONTO_BAGUNCA`:**
-  - `id` (PK), `relator_id` (FK para `MORADOR`), `culpado_id` (FK para `MORADOR`, `NULL` até que alguém assuma).
+  - `id` (PK), `relator_id` (FK para `MORADOR`), `culpado_id` (FK para `MORADOR`, `NULL` até que alguém assuma ou seja deliberado).
   - `foto_url` (Obrigatório): Registro visual da bagunça/copo jogado.
   - `local_descricao`: Onde foi encontrada.
-  - `status`: `'aberta'` (em debate) ou `'assumida'` (ponto creditado).
+  - `status`: `'aberta'` (em debate), `'assumida'` (ponto creditado) ou `'reuniao'` (encaminhado para deliberação na Reunião Semanal).
 - **`REGISTRO_MISTURA_DIARIA`:**
   - `id` (PK), `usuario_id` (FK para `USUARIO`), `data` (Date), `misturas_consumidas` (0.0 = Vazio, 0.5 = 1/2 mistura, 1.0 = X/cota completa).
 - **`FUNCA` (Sistema Geral de Tarefas / Antigo Chamado):**
@@ -362,8 +379,16 @@ classDiagram
   - Atributos: `id` (PK), `ponto_bagunca_id` (FK), `autor_id` (FK `USUARIO`), `conteudo`, `enviada_em`.
 - **`PONTOS_BAGUNCA_VISUALIZACOES` (Entidade Associativa com Chave Composta Natural):**
   - **Chave Composta:** `PRIMARY KEY (ponto_id, morador_id)`.
-  - Atributos adicionais: `visualizado_em` (DateTime).
-  - Rastreia a remoção individual do filtro de desfoque (`blur`) e o cumprimento da verificação obrigatória em 24 horas por cada morador.
+  - Atributos adicionais: `visualizado_em` (DateTime), `declarou_inocente` (Boolean), `inocente_em` (DateTime).
+  - Rastreia a remoção individual do filtro de desfoque (`blur`), a declaração formal de inocência ("Sou Inocente") e o cumprimento do dever de interação em 24 horas por cada morador.
+- **`PONTOS_BAGUNCA_CULPADOS` (Entidade Associativa entre `PONTO_BAGUNCA` e `MORADOR`):**
+  - **Chave Única:** `UNIQUE (ponto_id, morador_id)`.
+  - Atributos: `id` (PK), `ponto_id` (FK), `morador_id` (FK `MORADOR`), `assumido_em` (DateTime).
+  - Permite que múltiplos moradores assumam a mesma infração de bagunça dentro do prazo de 24 horas.
+- **`PONTOS_BAGUNCA_ACUSACOES` (Entidade Associativa entre `PONTO_BAGUNCA` e `MORADOR`):**
+  - **Chave Única:** `UNIQUE (ponto_id, acusado_id)`.
+  - Atributos: `id` (PK), `ponto_id` (FK), `acusador_id` (FK `MORADOR`), `acusado_id` (FK `MORADOR`), `criado_em` (DateTime).
+  - Registra acusações formuladas pelo relator na denúncia ou por outros moradores na apuração, resetando a inocência do acusado e emitindo alerta urgente.
 - **`MENSAGEM_CHAT_FRENTE` (Entidade Fraca de `FRENTE`):**
   - Depende da existência da Frente.
   - Atributos: `id` (PK), `frente_id` (FK), `autor_id` (FK `MORADOR`), `conteudo`, `enviada_em`.
@@ -386,7 +411,8 @@ classDiagram
 | **Escala_Faxina** | `QUARTO (1, n)` | $\longleftrightarrow$ | `AREA_COMUM (0, n)` | `semana_ano`, `ano` | Gera a entidade associativa com chave natural composta `ESCALA_SEMANAL_FAXINA`. |
 | **Cumpre_Faxina** | `ESCALA_SEMANAL (1, n)`| $\longleftrightarrow$| `REGISTRO_DIARIO_FAXINA (1, 1)` | - | Cada dia da semana exige um registro de cumprimento com foto obrigatória. |
 | **Relata_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (1, 1)` | - | Qualquer morador pode relatar um ponto de bagunça anexando foto. |
-| **Assume_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (0, 1)` | `assumido_em` | Culpado assume o ponto voluntariamente; até a confissão, a ponta destino é nula (0). |
+| **Assume_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (0, n)` | `assumido_em` | Múltiplos culpados podem assumir a infração voluntariamente em 24h via `PONTOS_BAGUNCA_CULPADOS`. |
+| **Acusa_Infracao** | `MORADOR (0, n)` | $\longleftrightarrow$ | `PONTO_BAGUNCA (0, n)` | `criado_em` | Relator e moradores podem apontar 1 ou mais acusados via `PONTOS_BAGUNCA_ACUSACOES`. |
 | **Debate_Infracao** | `PONTO_BAGUNCA (1, n)` | $\longleftrightarrow$ | `MENSAGEM_DISCUSSAO (1, 1)` | - | Ponto de Bagunça possui uma thread de mensagens em tempo real para apuração. |
 | **Deve_Cerveja** | `MORADOR (0, n)` | $\longleftrightarrow$ | `CAIXA_CERVEJA (1, 1)` | - | Lançamento estritamente unitário associado a um morador específico. |
 | **Liquida_Cerveja** | `USUARIO (Admin) (0, n)`| $\longleftrightarrow$| `CAIXA_CERVEJA (0, 1)` | `data_liquidacao` | Apenas um Administrador pode efetivar a baixa final da caixa física entregue. |
@@ -454,14 +480,44 @@ classDiagram
    * **Isolamento de Segurança:** O `AuthGuard` direciona usuários `role === 'externo'` exclusivamente para a `ConvidadoScreen`, ocultando dados internos (frentes, faxinas, pontos de bagunça, cervejas, atas).
    * **Presença Binária:** Convidados registram presença de forma binária (`1.0` = comeu na casa, `0.0` = desmarcado), com histórico mensal acessível para prestação de contas com o Financeiro da casa.
    * **Vínculo com a Frente Financeiro ("Caixinha"):** Ao implementar a Frente Financeiro, os registros diários de convidados (`daily_meals` com `role = 'externo'`) deverão alimentar diretamente um **Dashboard Mensal de Cobrança**. Esse painel consolidará o total de almoços/jantas de cada convidado por ciclo/mês, multiplicando pelo valor unitário da refeição e disponibilizando botão de acerto/cobrança via WhatsApp com chave PIX da república.
-10. **Pontos de Bagunça, Mecânica de Blur e Regra de 24h (`PONTOS_BAGUNCA_VISUALIZACOES` - Supabase RLS):**
-   * **Visualização Individual:** Cards de pontos abertos no carrossel da Home iniciam com filtro `blur-md` e badge com contagem regressiva de 24h a partir de `created_at`. O autor do ponto (relator) nunca visualiza com blur.
-   * **Desbloqueio e Auditoria:** Ao tocar no card, a foto é desfeita de blur e registrada na tabela associativa `pontos_bagunca_visualizacoes(ponto_id, morador_id)`.
-   * **Políticas RLS em `PONTOS_BAGUNCA_VISUALIZACOES`:**
-     - `SELECT`: Permitido para qualquer usuário autenticado (`authenticated`).
-     - `INSERT`: Permitido para morador ativo (`public.is_active_morador()`) registrando estritamente a sua própria visualização (`morador_id = auth.uid()`).
-   * **Penalidade Automática das 24 Horas:** A função do banco `public.verificar_penalidades_pontos_24h()` aplica 1 ponto de bagunça para qualquer morador ativo que não abrir a imagem após 24h da abertura. Se o culpado assumir a infração antes das 24h (`status = 'assumida'`), a penalidade de não-leitura é desativada para todos.
-   * **Realtime:** Integrada à publicação `supabase_realtime` para sincronização instantânea de novas denúncias, visualizações e mensagens de apuração.
+10. **Pontos de Bagunça, Mecânica de 24h, Múltiplas Assunções, Acusações e Deliberação de Reunião (`PONTOS_BAGUNCA_*` - Supabase RLS):**
+   * **Permanência no Carrossel da Home (2 Cards por Visualização):**
+     - Os pontos de bagunça são apresentados no carrossel da Home com largura exata de 2 cards por tela (`w-[calc((100%-12px)/2)]` com scroll horizontal e snap point).
+     - **Permanência Integral de 24 Horas:** O card permanece visível no carrossel por 24 horas integrais a contar de `created_at`, independentemente de já ter sido assumido por 1 ou mais moradores. Isso permite que outros envolvidos também assumam a responsabilidade e que toda a casa acompanhe a resolução em tempo real.
+   * **Mecânica de Blur e Visualização Individual:**
+     - Cards iniciam com filtro de desfoque (`blur-md`) e badge com cronômetro regressivo de 24h. O relator nunca visualiza com blur.
+     - Ao tocar no card, a foto é revelada e o evento é registrado na tabela associativa `pontos_bagunca_visualizacoes(ponto_id, morador_id)`.
+   * **Dever Universal de Interação em 24h e Penalidade por Omissão:**
+     - Todo morador ativo da república (exceto o relator) tem a obrigação cívica de interagir com o ponto dentro das primeiras 24 horas: ou assumindo a culpa ("Fui Eu / Assumir Ponto") ou declarando formalmente que não foi ele ("Sou Inocente" via RPC `declarar_inocencia_ponto_bagunca`).
+     - Moradores que permanecerem omissos (sem assumir e sem declarar inocência) recebem automaticamente **1 ponto administrativo por omissão** na rotina de corte das 24h (`verificar_penalidades_pontos_24h()`).
+   * **Múltiplas Assunções de Culpa (`pontos_bagunca_culpados`):**
+     - Mais de um morador pode assumir a mesma infração dentro da janela de 24h via RPC `assumir_ponto_bagunca`. Cada assunção é registrada na tabela `pontos_bagunca_culpados`.
+     - **Contabilidade de Cervejas:** O primeiro morador que assume preenche `culpado_id` no ponto original (convertido para `'assumida'` no corte ou imediatamente). Para os demais culpados, o RPC cria uma linha espelho em `pontos_bagunca` com `status = 'assumida'`, disparando o trigger `check_pontos_gerar_cerveja()` e garantindo que cada culpado receba exatamente 1 ponto individual para a contagem de 7 cervejas.
+   * **Múltiplas Acusações (`pontos_bagunca_acusacoes`):**
+     - O relator pode indicar 1 ou mais moradores acusados já no formulário de denúncia (`DenunciaPontoScreen.tsx`).
+     - Durante o período de apuração, qualquer morador ativo pode apontar acusados no modal de discussão.
+     - O trigger `trg_nova_acusacao_ponto` reseta a declaração prévia de inocência do acusado (`declarou_inocente = FALSE`) e dispara notificação in-app urgente.
+   * **Rotina Automática de Expiração de 24h (`verificar_penalidades_pontos_24h`):**
+     - Executada periodicamente a cada 15 minutos via `pg_cron`. Para cada ponto em aberto que completou 24 horas:
+       1. **Penaliza Omissos:** Aplica +1 ponto de penalidade para cada morador ativo (exceto o relator) que não assumiu a culpa nem declarou inocência (`declarou_inocente = TRUE`).
+       2. **Cenário 1 (≥1 culpado assumiu):** Atualiza o status do ponto para `'assumida'` e encerra o ciclo.
+       3. **Cenário 2 (Nenhum culpado assumiu, mas há acusado(s) pendentes):** Se houver moradores acusados que não declararam inocência, a culpa da infração é atribuída ao primeiro acusado pendente (`culpado_id = acusado_id`), atualizando para `'assumida'`.
+       4. **Cenário 3 (Nenhum culpado assumiu e não há acusados pendentes):** Se todos os acusados declararam inocência ou se não houve acusados, o ponto é movido para `status = 'reuniao'` para deliberação na Reunião Semanal.
+   * **Painel Administrativo de Deliberação em Reunião (`AprovacoesScreen.tsx`):**
+     - Na aba "Pontos em Reunião", o Administrador visualiza a lista de pontos sem culpado identificado, exibindo relator, foto, declarações de inocência, acusações e mensagens do chat.
+     - **Ações Disponíveis:**
+       - **Anular Ponto:** Deleta a ocorrência (`DELETE`) sem atribuição de culpa a nenhum morador.
+       - **Atribuir Culpa (Regra das 2 Penalidades via `admin_atribuir_ponto_reuniao`):** Se a reunião deliberar quem foi o culpado, o morador recebe uma penalidade estrita de **2 pontos no total**. Se o morador mentiu declarando inocência antes dos 24h (escapando da omissão), o RPC insere uma penalidade duplicada (2 pontos). Se o morador foi omisso (já tendo recebido 1 ponto no corte de 24h), o RPC insere 1 ponto adicional, totalizando $1 + 1 = 2$ pontos.
+   * **TTL de 60 Dias e Limpeza Automática (`limpar_pontos_bagunca_antigos`):**
+     - Rotina agendada diária às 03:30 BRT via `pg_cron` (`limpeza_pontos_bagunca_60d`) que expurga pontos resolvidos (`status = 'assumida'`) criados há mais de 60 dias (`assumida_em < NOW() - INTERVAL '60 days'`), com exclusão em cascata de mensagens, visualizações, acusações e culpados.
+     - A exclusão de pontos antigos não afeta em nenhuma hipótese os registros permanentes de `caixas_cerveja`.
+     - As consultas client-side (`useNotifications.ts`) limitam a busca de pontos de bagunça aos últimos 60 dias (`limite60Dias`).
+   * **Políticas RLS em `pontos_bagunca_*`:**
+     - `pontos_bagunca`: `SELECT` aberto; `INSERT` para moradores ativos (`relator_id = auth.uid()`); `UPDATE` e `DELETE` restritos a admin e funções `SECURITY DEFINER`.
+     - `pontos_bagunca_visualizacoes`: `SELECT` aberto; `INSERT` próprio (`morador_id = auth.uid()`); `UPDATE` próprio para registro de inocência (`morador_id = auth.uid()`).
+     - `pontos_bagunca_acusacoes`: `SELECT` aberto; `INSERT` para morador ativo acusando outro morador ativo (`acusador_id = auth.uid() AND acusador_id != acusado_id`); `DELETE` para o acusador ou admin.
+     - `pontos_bagunca_culpados`: `SELECT` aberto; `INSERT` para morador ativo assumindo a própria infração (`morador_id = auth.uid()`) ou via RPC `assumir_ponto_bagunca`; `DELETE` restrito a admin.
+   * **Realtime:** Integrada à publicação `supabase_realtime` para sincronização instantânea de denúncias, visualizações, acusações, culpados e deliberações de reunião.
 11. **Quadro de Pontos, Rodízio Linear e Fiscalização do Halls (`ESCALA_SEMANAL_FAXINA` & `REGISTRO_DIARIO_FAXINA`):**
    * **Arquitetura 100% Database-First & Serverless:** Eliminação completa da dependência de um servidor Node.js/Express intermediário em produção. 100% das regras de negócio, validações de integridade, cálculo de faltas e rotinas agendadas residem nativamente no PostgreSQL dentro do Supabase via **Triggers, Políticas RLS, Funções RPC (`SECURITY DEFINER`) e `pg_cron`**.
    * **6 Funções e 6 Quartos:** As 6 funções fixas (Sala de TV, Sala de Estudos, Externo, Dispensa, Cozinha, Halls) rotacionam linearmente a cada Domingo às 01:00 BRT entre os 6 quartos da república ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
