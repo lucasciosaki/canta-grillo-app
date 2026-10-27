@@ -18,6 +18,7 @@ import {
   getAreasComunsCached,
   invalidateCache,
 } from '../utils/sessionDataCache';
+import { getDataReferenciaFaxina } from '../types/faxina';
 
 interface RawTablesCache {
   perfis: any[];
@@ -173,6 +174,7 @@ export function useNotifications() {
     try {
       const agora = new Date();
       const { dateStr, dayOfWeek } = getBrasiliaDateParts(agora);
+      const { dataReferencia: dataReferenciaFaxina } = getDataReferenciaFaxina(agora);
       const isFimDeSemana = dayOfWeek === 0 || dayOfWeek === 6;
       const isAdmin = profile?.role === 'admin';
 
@@ -248,7 +250,7 @@ export function useNotifications() {
             const { data } = await supabase
               .from('registro_diario_faxina')
               .select('id, quarto_id, area_comum_id, data, status, fiscal_status')
-              .eq('data', dateStr);
+              .eq('data', dataReferenciaFaxina);
             if (data) currentRaw.tarefasHoje = data || [];
           })());
         }
@@ -367,7 +369,7 @@ export function useNotifications() {
           supabase.from('front_members').select('front_id, is_lider, data_inicio').eq('profile_id', user.id),
           getAreasComunsCached(),
           supabase.from('escala_semanal_faxina').select('quarto_id, area_comum_id, semana_ano, ano, pontos_faltas'),
-          supabase.from('registro_diario_faxina').select('id, quarto_id, area_comum_id, data, status, fiscal_status').eq('data', dateStr),
+          supabase.from('registro_diario_faxina').select('id, quarto_id, area_comum_id, data, status, fiscal_status').eq('data', dataReferenciaFaxina),
           supabase.from('funcas').select('id, titulo, status, prazo, frente_id, relator_id, atribuicoes:funca_atribuicoes(morador_id, troca_solicitada_para, atribuido_em)'),
           supabase.from('dogs_refeicoes_diarias').select('turno').eq('data', dateStr),
           isFimDeSemana

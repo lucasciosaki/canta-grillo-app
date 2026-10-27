@@ -51,10 +51,17 @@ export interface RegraPontoItem {
 }
 
 export interface DiaSemanaQuadro {
-  sigla: 'Seg' | 'Ter' | 'Qua' | 'Qui' | 'Sex' | 'Sáb' | 'Dom';
+  sigla: 'Dom' | 'Seg' | 'Ter' | 'Qua' | 'Qui' | 'Sex' | 'Sáb';
   nomeCompleto: string;
   data: string; // YYYY-MM-DD
   diaMes: string; // DD/MM
+}
+
+export interface DataReferenciaFaxina {
+  dataReferencia: string; // YYYY-MM-DD
+  isJanelaMadrugada: boolean;
+  semana_ano: number;
+  ano: number;
 }
 
 export interface QuadroSemanalConsolidado {
@@ -100,12 +107,12 @@ export function obterRegraPorPontos(
 
 /** 6 Funções Oficiais da Canta Grillo na ordem de rodízio */
 export const FUNCOES_OFICIAIS = [
-  'Sala de TV',
   'Sala de Estudos',
-  'Externo',
-  'Dispensa',
+  'Sala de TV',
   'Cozinha',
   'Halls',
+  'Dispensa',
+  'Externo',
 ] as const;
 
 /**
@@ -191,3 +198,150 @@ export function getDiasDaSemanaIso(semana_ano: number, ano: number): DiaSemanaQu
     };
   });
 }
+
+/**
+ * Retorna semana e ano da faxina onde a semana começa no Domingo e termina no Sábado.
+ * O Domingo inicial é D - D.getDay(). Usando a Quarta-feira como ponto médio (domingo + 3 dias),
+ * alinha-se de forma determinística com a numeração do ano ISO.
+ */
+export function getSemanaEAnoFaxina(data: Date | string = new Date()): { semana_ano: number; ano: number } {
+  let y: number, m: number, d: number;
+  if (typeof data === 'string') {
+    const parts = data.split('-').map(Number);
+    y = parts[0];
+    m = parts[1];
+    d = parts[2];
+  } else {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(data);
+    const getPart = (type: string) => parts.find((p) => p.type === type)?.value || '0';
+    y = parseInt(getPart('year'), 10);
+    m = parseInt(getPart('month'), 10);
+    d = parseInt(getPart('day'), 10);
+  }
+
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const dow = dt.getUTCDay(); // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+  const domingo = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - dow, 12, 0, 0));
+  const quarta = new Date(Date.UTC(domingo.getUTCFullYear(), domingo.getUTCMonth(), domingo.getUTCDate() + 3, 12, 0, 0));
+
+  const jan4 = new Date(Date.UTC(quarta.getUTCFullYear(), 0, 4, 12, 0, 0));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const monWeek1 = new Date(Date.UTC(quarta.getUTCFullYear(), 0, 4 - (jan4Day - 1), 12, 0, 0));
+  const diffDays = Math.round((quarta.getTime() - monWeek1.getTime()) / 86400000);
+  const weekNo = Math.floor(diffDays / 7) + 1;
+
+  return { semana_ano: weekNo, ano: quarta.getUTCFullYear() };
+}
+
+/**
+ * Retorna a data de referência ativa da faxina em horário de Brasília (America/Sao_Paulo).
+ * A janela de envio de cada dia D vai das 01:00h de D até as 00:59h de D+1.
+ * - Entre 00:00h e 00:59h: dataReferencia é ontem (D-1), isJanelaMadrugada = true, semana/ano de ontem.
+ * - A partir das 01:00h: dataReferencia é hoje (D), isJanelaMadrugada = false, semana/ano de hoje.
+ */
+export function getDataReferenciaFaxina(agora: Date = new Date()): DataReferenciaFaxina {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(agora);
+  const getPart = (type: string) => parts.find((p) => p.type === type)?.value || '0';
+
+  const year = parseInt(getPart('year'), 10);
+  const month = parseInt(getPart('month'), 10);
+  const day = parseInt(getPart('day'), 10);
+  const hour = parseInt(getPart('hour'), 10);
+
+  const isJanelaMadrugada = hour < 1;
+  let dataReferencia: string;
+
+  if (isJanelaMadrugada) {
+    const ontem = new Date(Date.UTC(year, month - 1, day - 1, 12, 0, 0));
+    const y = ontem.getUTCFullYear();
+    const m = String(ontem.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(ontem.getUTCDate()).padStart(2, '0');
+    dataReferencia = `${y}-${m}-${d}`;
+  } else {
+    dataReferencia = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  const { semana_ano, ano } = getSemanaEAnoFaxina(dataReferencia);
+  return { dataReferencia, isJanelaMadrugada, semana_ano, ano };
+}
+
+/**
+ * Retorna os 7 dias da semana do Quadro de Pontos (Domingo a Sábado) para uma dada (semana_ano, ano).
+ */
+export function getDiasDaSemanaQuadro(semana_ano: number, ano: number): DiaSemanaQuadro[] {
+  const NOMES_DIAS: Array<{
+    sigla: DiaSemanaQuadro['sigla'];
+    nomeCompleto: string;
+  }> = [
+    { sigla: 'Dom', nomeCompleto: 'Domingo' },
+    { sigla: 'Seg', nomeCompleto: 'Segunda-feira' },
+    { sigla: 'Ter', nomeCompleto: 'Terça-feira' },
+    { sigla: 'Qua', nomeCompleto: 'Quarta-feira' },
+    { sigla: 'Qui', nomeCompleto: 'Quinta-feira' },
+    { sigla: 'Sex', nomeCompleto: 'Sexta-feira' },
+    { sigla: 'Sáb', nomeCompleto: 'Sábado' },
+  ];
+
+  const jan4 = new Date(Date.UTC(ano, 0, 4, 12, 0, 0));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const monWeek1 = new Date(Date.UTC(ano, 0, 4 - (jan4Day - 1), 12, 0, 0));
+  const wedTarget = new Date(
+    Date.UTC(
+      monWeek1.getUTCFullYear(),
+      monWeek1.getUTCMonth(),
+      monWeek1.getUTCDate() + 2 + (semana_ano - 1) * 7,
+      12,
+      0,
+      0
+    )
+  );
+  const sunTarget = new Date(
+    Date.UTC(
+      wedTarget.getUTCFullYear(),
+      wedTarget.getUTCMonth(),
+      wedTarget.getUTCDate() - 3,
+      12,
+      0,
+      0
+    )
+  );
+
+  return NOMES_DIAS.map((item, idx) => {
+    const dt = new Date(
+      Date.UTC(
+        sunTarget.getUTCFullYear(),
+        sunTarget.getUTCMonth(),
+        sunTarget.getUTCDate() + idx,
+        12,
+        0,
+        0
+      )
+    );
+    const yyyy = String(dt.getUTCFullYear());
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+
+    return {
+      sigla: item.sigla,
+      nomeCompleto: item.nomeCompleto,
+      data: `${yyyy}-${mm}-${dd}`,
+      diaMes: `${dd}/${mm}`,
+    };
+  });
+}
+

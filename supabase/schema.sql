@@ -869,6 +869,16 @@ DECLARE
 BEGIN
   -- Se executado em contexto com usuário autenticado que não seja admin
   IF auth.uid() IS NOT NULL AND NOT public.is_admin() THEN
+    -- Impede envio ou alteração após o corte das 01:00h (status = 'faltou')
+    IF TG_OP = 'UPDATE' AND OLD.status = 'faltou' THEN
+      RAISE EXCEPTION 'O prazo para envio da foto desta faxina já expirou (corte diário às 01:00h).';
+    END IF;
+
+    -- Apenas Admin pode anular ou alterar dia anulado
+    IF NEW.status = 'anulado' OR (TG_OP = 'UPDATE' AND OLD.status = 'anulado') THEN
+      RAISE EXCEPTION 'Apenas o administrador pode anular ou alterar um dia de faxina anulado.';
+    END IF;
+
     -- 1. Validação de envio de foto: morador só envia para seu próprio quarto
     IF NEW.status = 'cumprido' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'cumprido' OR NEW.fotos_comprovacao IS DISTINCT FROM OLD.fotos_comprovacao) THEN
       SELECT quarto_id INTO v_user_quarto_id
@@ -1034,12 +1044,12 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT id INTO v_area_0 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de tv' LIMIT 1;
-  SELECT id INTO v_area_1 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de estudos' LIMIT 1;
-  SELECT id INTO v_area_2 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'externo' LIMIT 1;
-  SELECT id INTO v_area_3 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'dispensa' LIMIT 1;
-  SELECT id INTO v_area_4 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'cozinha' LIMIT 1;
-  SELECT id INTO v_area_5 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'halls' LIMIT 1;
+  SELECT id INTO v_area_0 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de estudos' LIMIT 1;
+  SELECT id INTO v_area_1 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'sala de tv' LIMIT 1;
+  SELECT id INTO v_area_2 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'cozinha' LIMIT 1;
+  SELECT id INTO v_area_3 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'halls' LIMIT 1;
+  SELECT id INTO v_area_4 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'dispensa' LIMIT 1;
+  SELECT id INTO v_area_5 FROM public.areas_comuns WHERE LOWER(TRIM(nome)) = 'externo' LIMIT 1;
 
   v_area_ids := ARRAY[v_area_0, v_area_1, v_area_2, v_area_3, v_area_4, v_area_5];
 
@@ -1051,12 +1061,12 @@ BEGIN
   LOOP
     v_nome_norm := LOWER(TRIM(r_item.area_nome));
     v_idx := CASE v_nome_norm
-      WHEN 'sala de tv' THEN 0
-      WHEN 'sala de estudos' THEN 1
-      WHEN 'externo' THEN 2
-      WHEN 'dispensa' THEN 3
-      WHEN 'cozinha' THEN 4
-      WHEN 'halls' THEN 5
+      WHEN 'sala de estudos' THEN 0
+      WHEN 'sala de tv' THEN 1
+      WHEN 'cozinha' THEN 2
+      WHEN 'halls' THEN 3
+      WHEN 'dispensa' THEN 4
+      WHEN 'externo' THEN 5
       ELSE 0
     END;
 
@@ -1085,6 +1095,23 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- RPC 1.1: Função helper para calcular (semana_ano, ano) da faxina iniciando no Domingo
+CREATE OR REPLACE FUNCTION public.get_faxina_semana_ano(p_data DATE)
+RETURNS TABLE(semana_ano INT, ano INT) AS $$
+DECLARE
+  v_domingo DATE;
+  v_quarta DATE;
+BEGIN
+  -- No PostgreSQL, EXTRACT(DOW FROM p_data): 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+  v_domingo := p_data - EXTRACT(DOW FROM p_data)::INT;
+  v_quarta := v_domingo + 3; -- Quarta-feira (ponto médio da semana Domingo a Sábado)
+
+  RETURN QUERY SELECT
+    TO_CHAR(v_quarta, 'IW')::INT AS semana_ano,
+    TO_CHAR(v_quarta, 'IYYY')::INT AS ano;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 -- RPC 2: Garantir quadro da semana e tarefas do dia
 CREATE OR REPLACE FUNCTION public.garantir_quadro_faxina_atual(
   p_semana_ano INT DEFAULT NULL,
@@ -1097,10 +1124,18 @@ DECLARE
   v_semana INT;
   v_ano INT;
   v_count_escala INT;
+  r_calc RECORD;
 BEGIN
   v_data := COALESCE(p_data, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE);
-  v_semana := COALESCE(p_semana_ano, TO_CHAR(v_data, 'IW')::INT);
-  v_ano := COALESCE(p_ano, TO_CHAR(v_data, 'IYYY')::INT);
+
+  IF p_semana_ano IS NULL OR p_ano IS NULL THEN
+    SELECT semana_ano, ano INTO r_calc FROM public.get_faxina_semana_ano(v_data);
+    v_semana := COALESCE(p_semana_ano, r_calc.semana_ano);
+    v_ano := COALESCE(p_ano, r_calc.ano);
+  ELSE
+    v_semana := p_semana_ano;
+    v_ano := p_ano;
+  END IF;
 
   SELECT COUNT(*) INTO v_count_escala
   FROM public.escala_semanal_faxina
@@ -1159,6 +1194,7 @@ DECLARE
   v_quartos_penalizados TEXT[] := '{}';
   v_semana_virada BOOLEAN := FALSE;
   r_reg RECORD;
+  r_calc RECORD;
 BEGIN
   v_hoje := COALESCE(p_data_ref, (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')::DATE);
   v_ontem := v_hoje - 1;
@@ -1169,7 +1205,7 @@ BEGIN
     WHERE data = v_ontem
   LOOP
     IF (r_reg.fotos_comprovacao IS NULL OR cardinality(r_reg.fotos_comprovacao) = 0 OR r_reg.status <> 'cumprido')
-       AND r_reg.status <> 'faltou' THEN
+       AND r_reg.status NOT IN ('faltou', 'anulado') THEN
       UPDATE public.registro_diario_faxina
       SET status = 'faltou'
       WHERE id = r_reg.id;
@@ -1184,10 +1220,13 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- Se v_hoje for Domingo (DOW = 0), avança rodízio semanal para a próxima semana
+  -- Se v_hoje for Domingo (DOW = 0), ontem foi Sábado (último dia da semana).
+  -- O rodízio avança para a NOVA semana que se inicia neste Domingo!
   IF EXTRACT(DOW FROM v_hoje) = 0 THEN
-    v_prox_semana := TO_CHAR(v_hoje + 1, 'IW')::INT;
-    v_prox_ano := TO_CHAR(v_hoje + 1, 'IYYY')::INT;
+    SELECT semana_ano, ano INTO r_calc FROM public.get_faxina_semana_ano(v_hoje);
+    v_prox_semana := r_calc.semana_ano;
+    v_prox_ano := r_calc.ano;
+
     PERFORM public.avancar_rodizio_faxina(v_prox_semana, v_prox_ano);
     v_semana_virada := TRUE;
   END IF;
@@ -1273,6 +1312,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Grants de execução para funções RPC
+GRANT EXECUTE ON FUNCTION public.get_faxina_semana_ano(DATE) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.is_fiscal_halls(INT, INT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.avancar_rodizio_faxina(INT, INT) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.garantir_quadro_faxina_atual(INT, INT, DATE) TO anon, authenticated;

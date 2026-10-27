@@ -641,9 +641,9 @@ flowchart LR
   - Ação do culpado "Assumir Ponto" com atribuição do ponto no perfil.
   - Acúmulo mensal e alerta automático de 7 pontos = 1 caixa de cerveja.
 - [x] **Módulo de Faxina dos Quartos & Quadro de Pontos:**
-  - Quadro semanal de quartos $\times$ áreas comuns da casa com rodízio linear circular.
-  - Formulário diário de envio de fotos da arrumação da área do quarto (com compressão client-side).
-  - Corte agendado diário às 01:00 BRT e auditoria do fiscal às 11:00 BRT.
+  - Quadro semanal de quartos $\times$ áreas comuns da casa com rodízio linear circular com ciclo iniciando no **Domingo** e encerrando no **Sábado** (barra dos 7 dias exibindo `Dom` a `Sáb`).
+  - Formulário diário de envio de fotos da arrumação da área do quarto (com compressão client-side). Fotos referentes a um dia aceitas até às 01:00 BRT do dia seguinte (com banner informativo de "Reta final da faxina!" entre 00:00h e 00:59h na aba "Minha Função").
+  - Corte agendado diário às 01:00 BRT (com auditoria das tarefas do dia anterior e avanço de escala aos Domingos) e auditoria do fiscal às 11:00 BRT.
   - Painel de fiscalização do Halls com aprovação, reprovação e controle de omissão.
   - Tabela de penalidades progressivas configuráveis de 2 a 7 pontos no Supabase (`public.regras_quadro_pontos`) e governança do Admin.
 
@@ -714,8 +714,8 @@ flowchart LR
   - Barra superior no topo do `MobileShell` exibida automaticamente quando `navigator.onLine === false`, informando que os dados em tela estão em cache.
 - [x] **Migração 100% Database-First das Regras da Faxina para o Supabase:**
   - Eliminação do backend Express em produção.
-  - Regras de negócio, cálculo de faltas e validações via Triggers e RLS no PostgreSQL.
-  - Funções RPC nativas (`avancar_rodizio_faxina`, `garantir_quadro_faxina_atual`, `processar_corte_diario_01h`, `processar_auditoria_fiscal_11h`).
+  - Regras de negócio, cálculo de faltas e validações via Triggers e RLS no PostgreSQL (`trg_validate_and_apply_faxina_rules`, `trg_faxina_reprovado_falta`).
+  - Funções RPC nativas (`get_faxina_semana_ano`, `avancar_rodizio_faxina`, `garantir_quadro_faxina_atual`, `processar_corte_diario_01h`, `processar_auditoria_fiscal_11h`).
   - Agendamentos automáticos nativos via `pg_cron` (01:00 BRT e 11:00 BRT).
 - [x] **Configuração de Deploy Contínuo Estático (`vercel.json` & `netlify.toml`):**
   - Rewrite SPA para `index.html`.

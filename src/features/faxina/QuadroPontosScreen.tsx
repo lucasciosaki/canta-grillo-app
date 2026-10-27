@@ -12,7 +12,8 @@ import type {
 } from '../../types/faxina';
 import {
   getIsoWeekAndYear,
-  getDiasDaSemanaIso,
+  getDiasDaSemanaQuadro,
+  getDataReferenciaFaxina,
   REGRAS_PONTOS_PADRAO,
   obterRegraPorPontos,
 } from '../../types/faxina';
@@ -45,12 +46,12 @@ interface QuadroPontosScreenProps {
 
 /** 6 Funções Canônicas da República Canta Grillo */
 const FUNCOES_CANONICAS = [
-  { nome: 'Sala de TV', descricao: 'Organização diária e recolhimento de itens na Sala de TV' },
   { nome: 'Sala de Estudos', descricao: 'Limpeza de mesas, cadeiras e organização do espaço de estudos' },
-  { nome: 'Externo', descricao: 'Limpeza e recolhimento de materiais na área externa' },
-  { nome: 'Dispensa', descricao: 'Organização das prateleiras e mantimentos na dispensa' },
+  { nome: 'Sala de TV', descricao: 'Organização diária e recolhimento de itens na Sala de TV' },
   { nome: 'Cozinha', descricao: 'Organização de pias, bancadas e recolhimento de louças' },
   { nome: 'Halls', descricao: 'Limpeza dos corredores e fiscalização diária das outras 5 funções da casa' },
+  { nome: 'Dispensa', descricao: 'Organização das prateleiras e mantimentos na dispensa' },
+  { nome: 'Externo', descricao: 'Limpeza e recolhimento de materiais na área externa' },
 ];
 
 /** 6 Quartos Canônicos da República Canta Grillo */
@@ -213,15 +214,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
     try {
       setErrorMsg(null);
 
-      const agora = new Date();
-      const hojeStr = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Sao_Paulo',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(agora);
-      const [anoStr, mesStr, diaStr] = hojeStr.split('-').map(Number);
-      const { semana_ano, ano } = getIsoWeekAndYear(new Date(anoStr, mesStr - 1, diaStr, 12, 0, 0));
+      const { dataReferencia, semana_ano, ano } = getDataReferenciaFaxina(new Date());
 
       // 1. Invoca a RPC nativa para garantir a escala da semana e tarefas do dia apenas na carga inicial
       if (!hasEnsuredQuadroRef.current) {
@@ -230,7 +223,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
           await supabase.rpc('garantir_quadro_faxina_atual', {
             p_semana_ano: semana_ano,
             p_ano: ano,
-            p_data: hojeStr,
+            p_data: dataReferencia,
           });
         } catch (rpcErr) {
           console.warn('[QuadroPontosScreen] Aviso ao chamar garantir_quadro_faxina_atual:', rpcErr);
@@ -374,7 +367,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         quarto_fiscal_id: itemFiscal?.quarto_id || null,
         quarto_fiscal_nome: itemFiscal?.quarto?.nome || null,
         itens,
-        tarefas_hoje: tarefasSemana.filter((t) => t.data === hojeStr),
+        tarefas_hoje: tarefasSemana.filter((t) => t.data === dataReferencia),
         tarefas_semana: tarefasSemana,
         precisa_inicializacao,
       };
@@ -469,15 +462,10 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         quality: 0.72,
       });
 
-      const hojeStr = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Sao_Paulo',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date());
+      const { dataReferencia, semana_ano: semRef, ano: anoRef } = getDataReferenciaFaxina(new Date());
 
-      const semana_ano = minhaEscala.semana_ano || quadro?.semana_ano || getIsoWeekAndYear().semana_ano;
-      const ano = minhaEscala.ano || quadro?.ano || getIsoWeekAndYear().ano;
+      const semana_ano = minhaEscala.semana_ano || quadro?.semana_ano || semRef;
+      const ano = minhaEscala.ano || quadro?.ano || anoRef;
 
       // Upsert direto no Supabase: o trigger trg_validate_and_apply_faxina_rules valida que o morador
       // só envia para seu próprio quarto (ou admin), atribuindo registrado_por automaticamente.
@@ -489,7 +477,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
             area_comum_id: minhaEscala.area_comum_id,
             semana_ano,
             ano,
-            data: hojeStr,
+            data: dataReferencia,
             status: 'cumprido',
             fotos_comprovacao: [photoUrl],
             enviado_em: new Date().toISOString(),
@@ -600,13 +588,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         return;
       }
 
-      const { semana_ano, ano } = getIsoWeekAndYear();
-      const hojeStr = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'America/Sao_Paulo',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(new Date());
+      const { dataReferencia, semana_ano, ano } = getDataReferenciaFaxina(new Date());
 
       // 1. Garante mapeamento correto de IDs das áreas comuns
       const { data: areasDb } = await supabase.from('areas_comuns').select('id, nome');
@@ -652,7 +634,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
         await supabase.rpc('garantir_quadro_faxina_atual', {
           p_semana_ano: semana_ano,
           p_ano: ano,
-          p_data: hojeStr,
+          p_data: dataReferencia,
         });
       } catch (rpcErr) {
         console.warn('[QuadroPontosScreen] Aviso ao chamar RPC após salvar escala:', rpcErr);
@@ -753,13 +735,10 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
 
   // Permite acesso ao Admin tanto para profile.role === 'admin' quanto quando a casa precisa de inicialização
   const podeAcessarAdmin = isAdmin || quadro?.precisa_inicializacao || !quadro?.itens || quadro.itens.length === 0;
-  const hojeStr = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-  const diasDaSemana = quadro ? getDiasDaSemanaIso(quadro.semana_ano, quadro.ano) : [];
+  const { dataReferencia, isJanelaMadrugada } = getDataReferenciaFaxina(new Date());
+  const diasDaSemana = quadro ? getDiasDaSemanaQuadro(quadro.semana_ano, quadro.ano) : [];
+  const diaReferenciaObj = diasDaSemana.find((d) => d.data === dataReferencia);
+  const nomeDiaRef = diaReferenciaObj?.nomeCompleto || 'ontem';
 
   return (
     <div className="pb-16 max-w-lg mx-auto">
@@ -1047,7 +1026,7 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                       );
                       const foiReprovado = tarefaDia?.fiscal_status === 'reprovado';
                       const faltouDia = tarefaDia?.status === 'faltou';
-                      const isHoje = dia.data === hojeStr;
+                      const isHoje = dia.data === dataReferencia;
 
                       let cellStyle = 'bg-cream/30 border-line/60 text-muted opacity-70';
                       if (temFoto) {
@@ -1117,11 +1096,11 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                         type="button"
                         onClick={() => {
                           if (tarefa.fotos_comprovacao?.[0]) {
-                            const diaHoje = diasDaSemana.find((d) => d.data === hojeStr) || {
-                              sigla: 'Seg',
+                            const diaHoje = diasDaSemana.find((d) => d.data === dataReferencia) || {
+                              sigla: 'Dom',
                               nomeCompleto: 'Hoje',
-                              data: hojeStr,
-                              diaMes: hojeStr.slice(5).split('-').reverse().join('/'),
+                              data: dataReferencia,
+                              diaMes: dataReferencia.slice(5).split('-').reverse().join('/'),
                             };
                             setTarefaDiaSelecionada({
                               tarefa: {
@@ -1240,6 +1219,16 @@ export const QuadroPontosScreen: React.FC<QuadroPontosScreenProps> = ({ onBack }
                   </div>
                 )}
               </div>
+
+              {/* Banner Reta Final da Faxina (00h-01h) */}
+              {isJanelaMadrugada && (
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3 text-xs text-amber-900 shadow-2xs">
+                  <Clock className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                  <p className="leading-relaxed">
+                    ⏰ <strong>Reta final da faxina!</strong> Até as <strong>01:00h</strong> você ainda pode enviar a comprovação referente a <strong>{nomeDiaRef}</strong>.
+                  </p>
+                </div>
+              )}
 
               {/* Status do Envio de Hoje */}
               <div className="p-5 rounded-2xl bg-surface border border-line shadow-xs">

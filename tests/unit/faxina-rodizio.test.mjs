@@ -6,6 +6,9 @@ import {
   atingiuPenalidadeSemanal,
   getIsoWeekAndYear,
   getDiasDaSemanaIso,
+  getDiasDaSemanaQuadro,
+  getSemanaEAnoFaxina,
+  getDataReferenciaFaxina,
   REGRAS_PONTOS_PADRAO,
   obterRegraPorPontos,
 } from '../../src/types/faxina.ts';
@@ -15,39 +18,39 @@ describe('Unit Tests: Quadro de Pontos & Rodízio Linear de Faxina', () => {
     it('deve possuir exatamente 6 funções fixas na ordem acordada', () => {
       assert.equal(FUNCOES_OFICIAIS.length, 6);
       assert.deepEqual([...FUNCOES_OFICIAIS], [
-        'Sala de TV',
         'Sala de Estudos',
-        'Externo',
-        'Dispensa',
+        'Sala de TV',
         'Cozinha',
         'Halls',
+        'Dispensa',
+        'Externo',
       ]);
     });
 
-    it('Halls deve ser a 6ª função (índice 5), com papel de Fiscal', () => {
-      assert.equal(FUNCOES_OFICIAIS[5], 'Halls');
+    it('Halls deve ser a 4ª função (índice 3), com papel de Fiscal', () => {
+      assert.equal(FUNCOES_OFICIAIS[3], 'Halls');
     });
   });
 
   describe('2. Rodízio Linear Circular entre os 6 Quartos', () => {
     const quartos = [
-      { quarto_id: 'q1', area_ordem: 0 }, // Sala de TV
-      { quarto_id: 'q2', area_ordem: 1 }, // Sala de Estudos
-      { quarto_id: 'q3', area_ordem: 2 }, // Externo
-      { quarto_id: 'q4', area_ordem: 3 }, // Dispensa
-      { quarto_id: 'q5', area_ordem: 4 }, // Cozinha
-      { quarto_id: 'q6', area_ordem: 5 }, // Halls (Fiscal)
+      { quarto_id: 'q1', area_ordem: 0 }, // Sala de Estudos
+      { quarto_id: 'q2', area_ordem: 1 }, // Sala de TV
+      { quarto_id: 'q3', area_ordem: 2 }, // Cozinha
+      { quarto_id: 'q4', area_ordem: 3 }, // Halls (Fiscal)
+      { quarto_id: 'q5', area_ordem: 4 }, // Dispensa
+      { quarto_id: 'q6', area_ordem: 5 }, // Externo
     ];
 
     it('cada quarto deve avançar linearmente 1 posição na lista de funções', () => {
       const proximaSemana = calcularProximaRotacao(quartos);
 
-      assert.equal(proximaSemana[0].proxima_area_ordem, 1, 'q1 (Sala de TV -> Sala de Estudos)');
-      assert.equal(proximaSemana[1].proxima_area_ordem, 2, 'q2 (Sala de Estudos -> Externo)');
-      assert.equal(proximaSemana[2].proxima_area_ordem, 3, 'q3 (Externo -> Dispensa)');
-      assert.equal(proximaSemana[3].proxima_area_ordem, 4, 'q4 (Dispensa -> Cozinha)');
-      assert.equal(proximaSemana[4].proxima_area_ordem, 5, 'q5 (Cozinha -> Halls/Fiscal)');
-      assert.equal(proximaSemana[5].proxima_area_ordem, 0, 'q6 (Halls -> Sala de TV, fechando o ciclo)');
+      assert.equal(proximaSemana[0].proxima_area_ordem, 1, 'q1 (Sala de Estudos -> Sala de TV)');
+      assert.equal(proximaSemana[1].proxima_area_ordem, 2, 'q2 (Sala de TV -> Cozinha)');
+      assert.equal(proximaSemana[2].proxima_area_ordem, 3, 'q3 (Cozinha -> Halls/Fiscal)');
+      assert.equal(proximaSemana[3].proxima_area_ordem, 4, 'q4 (Halls -> Dispensa)');
+      assert.equal(proximaSemana[4].proxima_area_ordem, 5, 'q5 (Dispensa -> Externo)');
+      assert.equal(proximaSemana[5].proxima_area_ordem, 0, 'q6 (Externo -> Sala de Estudos, fechando o ciclo)');
     });
 
     it('deve garantir bijeção completa sem colisões (6 quartos únicos em 6 funções únicas)', () => {
@@ -279,6 +282,118 @@ describe('Unit Tests: Quadro de Pontos & Rodízio Linear de Faxina', () => {
         assert.equal(check.semana_ano, semana_ano);
         assert.equal(check.ano, ano);
       }
+    });
+  });
+
+  describe('7. Nova Janela Temporal de Faxina (Até 01:00h do Dia Seguinte)', () => {
+    it('getDataReferenciaFaxina às 23:50h deve retornar data de hoje e isJanelaMadrugada = false', () => {
+      // 23:50 BRT (UTC-3)
+      const data2350 = new Date('2026-10-27T23:50:00-03:00');
+      const res = getDataReferenciaFaxina(data2350);
+      assert.equal(res.dataReferencia, '2026-10-27');
+      assert.equal(res.isJanelaMadrugada, false);
+      assert.equal(res.semana_ano, 44);
+      assert.equal(res.ano, 2026);
+    });
+
+    it('getDataReferenciaFaxina às 00:30h deve retornar data de ontem e isJanelaMadrugada = true (reta final)', () => {
+      // 00:30 BRT (UTC-3)
+      const data0030 = new Date('2026-10-27T00:30:00-03:00');
+      const res = getDataReferenciaFaxina(data0030);
+      assert.equal(res.dataReferencia, '2026-10-26');
+      assert.equal(res.isJanelaMadrugada, true);
+      assert.equal(res.semana_ano, 44);
+      assert.equal(res.ano, 2026);
+    });
+
+    it('getDataReferenciaFaxina às 01:05h deve retornar data de hoje e isJanelaMadrugada = false', () => {
+      // 01:05 BRT (UTC-3)
+      const data0105 = new Date('2026-10-27T01:05:00-03:00');
+      const res = getDataReferenciaFaxina(data0105);
+      assert.equal(res.dataReferencia, '2026-10-27');
+      assert.equal(res.isJanelaMadrugada, false);
+      assert.equal(res.semana_ano, 44);
+      assert.equal(res.ano, 2026);
+    });
+
+    it('no Domingo às 00:30h (madrugada), a data de referência deve ser o Sábado da semana anterior', () => {
+      // Domingo 25/10/2026 às 00:30 BRT -> Sábado 24/10/2026 da semana 43
+      const dom0030 = new Date('2026-10-25T00:30:00-03:00');
+      const res = getDataReferenciaFaxina(dom0030);
+      assert.equal(res.dataReferencia, '2026-10-24');
+      assert.equal(res.isJanelaMadrugada, true);
+      assert.equal(res.semana_ano, 43);
+      assert.equal(res.ano, 2026);
+    });
+
+    it('no Domingo às 01:05h, inicia-se oficialmente a nova semana (Semana no Domingo)', () => {
+      // Domingo 25/10/2026 às 01:05 BRT -> Domingo 25/10/2026 da semana 44
+      const dom0105 = new Date('2026-10-25T01:05:00-03:00');
+      const res = getDataReferenciaFaxina(dom0105);
+      assert.equal(res.dataReferencia, '2026-10-25');
+      assert.equal(res.isJanelaMadrugada, false);
+      assert.equal(res.semana_ano, 44);
+      assert.equal(res.ano, 2026);
+    });
+  });
+
+  describe('8. Ciclo Semanal Iniciando no Domingo e Encerrando no Sábado', () => {
+    it('getDiasDaSemanaQuadro retorna exatamente 7 dias começando em Dom e terminando em Sáb', () => {
+      const dias = getDiasDaSemanaQuadro(44, 2026);
+      assert.equal(dias.length, 7);
+      assert.deepEqual(
+        dias.map((d) => d.sigla),
+        ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
+      );
+      assert.equal(dias[0].data, '2026-10-25'); // Domingo
+      assert.equal(dias[6].data, '2026-10-31'); // Sábado
+    });
+
+    it('todos os 7 dias da semana (de Domingo a Sábado) pertencem à mesma (semana_ano, ano)', () => {
+      const dias = getDiasDaSemanaQuadro(44, 2026);
+      for (const dia of dias) {
+        const info = getSemanaEAnoFaxina(dia.data);
+        assert.equal(info.semana_ano, 44, `Dia ${dia.data} (${dia.sigla}) deve ser semana 44`);
+        assert.equal(info.ano, 2026, `Dia ${dia.data} (${dia.sigla}) deve ser ano 2026`);
+      }
+    });
+
+    it('no corte do Domingo às 01:00h, penaliza quem faltou no Sábado e vira o rodízio para a semana nova', () => {
+      function simularCorteDiario01h(hojeStr, tarefasSabado) {
+        // hojeStr = "2026-10-25" (Domingo) -> data auditada = "2026-10-24" (Sábado)
+        const penalizados = [];
+        for (const t of tarefasSabado) {
+          if (!t.fotos_comprovacao || t.fotos_comprovacao.length === 0 || t.status !== 'cumprido') {
+            penalizados.push(t.quarto_id);
+          }
+        }
+        const [y, m, d] = hojeStr.split('-').map(Number);
+        const dtHoje = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+        const isDomingo = dtHoje.getUTCDay() === 0;
+
+        let semanaVirada = false;
+        let novaSemana = null;
+        if (isDomingo) {
+          semanaVirada = true;
+          novaSemana = getSemanaEAnoFaxina(hojeStr);
+        }
+
+        return { penalizados, semanaVirada, novaSemana };
+      }
+
+      const tarefasSabado = [
+        { quarto_id: 'q1', status: 'cumprido', fotos_comprovacao: ['foto.jpg'] },
+        { quarto_id: 'q2', status: 'pendente', fotos_comprovacao: [] }, // Faltou no sábado
+        { quarto_id: 'q3', status: 'cumprido', fotos_comprovacao: ['foto.jpg'] },
+        { quarto_id: 'q4', status: 'cumprido', fotos_comprovacao: ['foto.jpg'] },
+        { quarto_id: 'q5', status: 'cumprido', fotos_comprovacao: ['foto.jpg'] },
+        { quarto_id: 'q6', status: 'cumprido', fotos_comprovacao: ['foto.jpg'] },
+      ];
+
+      const corte = simularCorteDiario01h('2026-10-25', tarefasSabado);
+      assert.deepEqual(corte.penalizados, ['q2'], 'Quarto q2 deve ser penalizado pela falta no sábado');
+      assert.equal(corte.semanaVirada, true, 'O corte de domingo às 01h deve virar a semana');
+      assert.deepEqual(corte.novaSemana, { semana_ano: 44, ano: 2026 });
     });
   });
 });

@@ -8,6 +8,9 @@ import {
   calcularProximaRotacao,
   getIsoWeekAndYear,
   getDiasDaSemanaIso,
+  getDiasDaSemanaQuadro,
+  getDataReferenciaFaxina,
+  getSemanaEAnoFaxina,
   obterRegraPorPontos,
   REGRAS_PONTOS_PADRAO,
 } from '../../../types/faxina.ts';
@@ -184,6 +187,19 @@ describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => 
         'Deve marcar como omitido tarefas que o fiscal não avaliou até de manhã'
       );
     });
+
+    it('deve definir a função helper public.get_faxina_semana_ano para ciclo iniciando no Domingo', () => {
+      assert.match(
+        schemaSql,
+        /CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.get_faxina_semana_ano\s*\(/i,
+        'RPC get_faxina_semana_ano deve existir'
+      );
+      assert.match(
+        schemaSql,
+        /p_data\s*-\s*EXTRACT\s*\(\s*DOW\s+FROM\s+p_data\s*\)::INT/i,
+        'Deve calcular o domingo da semana subtraindo DOW'
+      );
+    });
   });
 
   describe('4. Agendamento Automático via pg_cron', () => {
@@ -242,9 +258,9 @@ describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => 
   });
 
   describe('6. Consistência das Regras de Negócio da Faxina no TypeScript', () => {
-    it('deve ter 6 funções oficiais canônicas terminando com Halls', () => {
+    it('deve ter 6 funções oficiais canônicas contendo Halls', () => {
       assert.equal(FUNCOES_OFICIAIS.length, 6);
-      assert.equal(FUNCOES_OFICIAIS[5], 'Halls');
+      assert.ok(FUNCOES_OFICIAIS.includes('Halls'));
     });
 
     it('deve calcular a rotação circular oficial preservando bijeção dos 6 quartos', () => {
@@ -260,7 +276,7 @@ describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => 
       const prox = calcularProximaRotacao(escala);
       assert.equal(prox.length, 6);
       assert.equal(prox[0].proxima_area_ordem, 1);
-      assert.equal(prox[5].proxima_area_ordem, 0); // Halls volta para Sala de TV
+      assert.equal(prox[5].proxima_area_ordem, 0); // Última função volta para a primeira
     });
 
     it('deve obter regras progressivas padrão de 2 a 7 pontos', () => {
@@ -326,6 +342,19 @@ describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => 
         quadroScreenCode,
         /\{souFiscal\s*&&\s*\(\s*<button[\s\S]*?setActiveTab\('fiscal'\)[\s\S]*?Fiscal \(Halls\)/,
         'A aba Fiscal (Halls) só deve ser exibida para o quarto do Halls na semana ou Admin'
+      );
+    });
+
+    it('deve utilizar getDiasDaSemanaQuadro e exibir banner informativo na madrugada', () => {
+      assert.match(
+        quadroScreenCode,
+        /getDiasDaSemanaQuadro\s*\(/,
+        'Deve utilizar getDiasDaSemanaQuadro para gerar a escala de Dom a Sáb'
+      );
+      assert.match(
+        quadroScreenCode,
+        /Reta final da faxina!/,
+        'Deve renderizar banner informativo avisando sobre reta final na janela da madrugada'
       );
     });
   });

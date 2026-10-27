@@ -211,8 +211,8 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - As regras são persistidas na tabela `public.regras_quadro_pontos` e sincronizadas em tempo real via Supabase Realtime.
 - **Exibição na Interface:**
   - Na aba "Quadro Geral", exibe-se um card expansível/recolhível com a lista dos 7 níveis de punição.
-  - Em cada um dos 6 cards de quarto na aba "Quadro Geral", exibe-se a **barra dos 7 dias da semana ISO (`Seg` a `Dom`)** mostrando em quais dias o quarto enviou foto, faltou ou está pendente. Ao clicar em um dia com foto enviada, abre-se o **Modal de Foto do Dia** com a imagem enviada, apelido do autor, horário e parecer do Fiscal.
-  - Na aba "Minha Função", caso um colega de quarto já tenha enviado a foto do dia, exibe-se um aviso explícito identificando quem enviou (por apelido) e permitindo substituir a foto enviada a qualquer momento antes do corte.
+  - Em cada um dos 6 cards de quarto na aba "Quadro Geral", exibe-se a **barra dos 7 dias da semana (`Dom` a `Sáb`)** mostrando em quais dias o quarto enviou foto, faltou ou está pendente. Ao clicar em um dia com foto enviada, abre-se o **Modal de Foto do Dia** com a imagem enviada, apelido do autor, horário e parecer do Fiscal.
+  - Na aba "Minha Função", caso um colega de quarto já tenha enviado a foto do dia, exibe-se um aviso explícito identificando quem enviou (por apelido) e permitindo substituir a foto enviada a qualquer momento antes do corte. Na janela da madrugada (entre 00:00h e 00:59h), exibe-se banner informativo em destaque de **"Reta final da faxina!"** indicando que até as 01:00h a comprovação referente ao dia anterior ainda é aceita.
   - A aba **"Fiscal (Halls)"** na barra de navegação superior é exibida exclusivamente para os moradores cujo quarto está escalado na função **Halls** na semana vigente ou para **Administradores** (para os demais quartos são exibidas apenas as abas `Quadro Geral` e `Minha Função`).
   - No card de cada quarto com $\ge 2$ faltas, exibe-se em destaque a punição específica correspondente ao total de faltas do quarto.
 - **Governança, Políticas RLS e Automação 100% Database-First:**
@@ -221,12 +221,13 @@ Digitalização e substituição do controle físico em papel ("folha de mistura
   - **`areas_comuns`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Gestão permitida para Administradores e moradores ativos.
   - **`escala_semanal_faxina`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Modificação manual direta restrita a Administradores (`ALL TO authenticated USING (public.is_admin())`). O rodízio automático e a atribuição de faltas ocorrem via Stored Procedures e Triggers `SECURITY DEFINER`.
   - **`registro_diario_faxina`**: Leitura pública (`SELECT TO anon, authenticated USING (true)`). Escrita aberta a moradores ativos e administradores, protegida rigorosamente por triggers:
-    - **Trigger `trg_validate_and_apply_faxina_rules` (`BEFORE INSERT OR UPDATE`):** Valida que o morador só envia fotos de comprovação para o seu próprio quarto (`NEW.quarto_id = profiles.quarto_id`) e que apenas moradores do quarto escalado no Halls naquela semana (`public.is_fiscal_halls(semana, ano)`) ou o Admin podem registrar aprovação ou reprovação.
+    - **Trigger `trg_validate_and_apply_faxina_rules` (`BEFORE INSERT OR UPDATE`):** Valida que o morador só envia fotos de comprovação para o seu próprio quarto (`NEW.quarto_id = profiles.quarto_id`), impede envios ou alterações extemporâneas caso a tarefa já tenha sido penalizada pelo corte das 01:00h (`OLD.status = 'faltou'`), reserva anulações exclusivamente a administradores e assegura que apenas moradores do quarto escalado no Halls naquela semana (`public.is_fiscal_halls(semana, ano)`) ou o Admin possam registrar fiscalização.
     - **Trigger `trg_faxina_reprovado_falta` (`AFTER INSERT OR UPDATE OF fiscal_status`):** Em caso de reprovação expressa (`fiscal_status = 'reprovado'`), incrementa automaticamente `pontos_faltas = pontos_faltas + 1` na escala semanal.
   - **Funções RPC Nativas (`SECURITY DEFINER`):**
+    - `public.get_faxina_semana_ano(p_data)`: calcula deterministamente o número da semana e ano com início no Domingo e término no Sábado (usando Quarta-feira como ponto médio).
     - `public.avancar_rodizio_faxina(p_nova_semana, p_novo_ano)`: aplica o rodízio linear circular ($Q_i \rightarrow F_{(i+1) \pmod 6}$).
-    - `public.garantir_quadro_faxina_atual(p_semana_ano, p_ano, p_data)`: assegura a existência da escala da semana e as 6 tarefas diárias.
-    - `public.processar_corte_diario_01h(p_data_ref)`: corte diário das 01:00 BRT com auditoria de faltas e virada dominical.
+    - `public.garantir_quadro_faxina_atual(p_semana_ano, p_ano, p_data)`: assegura a existência da escala da semana e as 6 tarefas diárias com início dominical.
+    - `public.processar_corte_diario_01h(p_data_ref)`: corte diário das 01:00 BRT com auditoria de faltas do dia anterior; no Domingo às 01:00h, audita o Sábado (último dia da escala anterior) e avança o rodízio para a nova semana.
     - `public.processar_auditoria_fiscal_11h(p_data_ref)`: corte das 11:00 BRT com marcação de omissões e falta única ao Halls.
   - **Rotinas Agendadas Nativas via `pg_cron`:**
     - `0 4 * * *` (01:00 BRT / 04:00 UTC): Corte diário da faxina.
