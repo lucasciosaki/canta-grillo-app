@@ -5,6 +5,7 @@ import {
   calcularProximaRotacao,
   atingiuPenalidadeSemanal,
   getIsoWeekAndYear,
+  getDiasDaSemanaIso,
   REGRAS_PONTOS_PADRAO,
   obterRegraPorPontos,
 } from '../../src/types/faxina.ts';
@@ -255,11 +256,29 @@ describe('Unit Tests: Quadro de Pontos & Rodízio Linear de Faxina', () => {
     });
   });
 
-  describe('6. Cálculo de Semana ISO e Ano', () => {
+  describe('6. Cálculo de Semana ISO, Ano e 7 Dias da Semana', () => {
     it('deve retornar semana e ano válidos para datas correntes', () => {
       const info = getIsoWeekAndYear(new Date('2026-10-15T12:00:00Z'));
       assert.ok(info.semana_ano >= 1 && info.semana_ano <= 53);
       assert.equal(info.ano, 2026);
+    });
+
+    it('deve gerar exatamente os 7 dias da semana ISO (Seg a Dom) consistentes com getIsoWeekAndYear', () => {
+      const { semana_ano, ano } = getIsoWeekAndYear(new Date('2026-10-27T12:00:00Z'));
+      const dias = getDiasDaSemanaIso(semana_ano, ano);
+
+      assert.equal(dias.length, 7);
+      assert.deepEqual(
+        dias.map((d) => d.sigla),
+        ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+      );
+
+      for (const dia of dias) {
+        const [yyyy, mm, dd] = dia.data.split('-').map(Number);
+        const check = getIsoWeekAndYear(new Date(yyyy, mm - 1, dd, 12, 0, 0));
+        assert.equal(check.semana_ano, semana_ano);
+        assert.equal(check.ano, ano);
+      }
     });
   });
 });

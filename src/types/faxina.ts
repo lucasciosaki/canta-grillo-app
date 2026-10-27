@@ -50,6 +50,13 @@ export interface RegraPontoItem {
   descricao: string;
 }
 
+export interface DiaSemanaQuadro {
+  sigla: 'Seg' | 'Ter' | 'Qua' | 'Qui' | 'Sex' | 'Sáb' | 'Dom';
+  nomeCompleto: string;
+  data: string; // YYYY-MM-DD
+  diaMes: string; // DD/MM
+}
+
 export interface QuadroSemanalConsolidado {
   semana_ano: number;
   ano: number;
@@ -59,6 +66,7 @@ export interface QuadroSemanalConsolidado {
   quarto_fiscal_nome: string | null;
   itens: EscalaSemanalItem[];
   tarefas_hoje: TarefaDiariaItem[];
+  tarefas_semana: TarefaDiariaItem[];
   precisa_inicializacao: boolean;
 }
 
@@ -132,4 +140,54 @@ export function getIsoWeekAndYear(d = new Date()): { semana_ano: number; ano: nu
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   const weekNo = Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
   return { semana_ano: weekNo, ano: date.getUTCFullYear() };
+}
+
+/**
+ * Retorna os 7 dias da semana ISO (Segunda a Domingo) para uma dada (semana_ano, ano).
+ */
+export function getDiasDaSemanaIso(semana_ano: number, ano: number): DiaSemanaQuadro[] {
+  const NOMES_DIAS: Array<{
+    sigla: DiaSemanaQuadro['sigla'];
+    nomeCompleto: string;
+  }> = [
+    { sigla: 'Seg', nomeCompleto: 'Segunda-feira' },
+    { sigla: 'Ter', nomeCompleto: 'Terça-feira' },
+    { sigla: 'Qua', nomeCompleto: 'Quarta-feira' },
+    { sigla: 'Qui', nomeCompleto: 'Quinta-feira' },
+    { sigla: 'Sex', nomeCompleto: 'Sexta-feira' },
+    { sigla: 'Sáb', nomeCompleto: 'Sábado' },
+    { sigla: 'Dom', nomeCompleto: 'Domingo' },
+  ];
+
+  // No ISO 8601, o dia 4 de janeiro está sempre na Semana 1 do ano
+  const jan4 = new Date(Date.UTC(ano, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7; // 1 (Seg) a 7 (Dom)
+  const mondayWeek1 = new Date(Date.UTC(ano, 0, 4 - (jan4Day - 1)));
+  const mondayTarget = new Date(
+    Date.UTC(
+      mondayWeek1.getUTCFullYear(),
+      mondayWeek1.getUTCMonth(),
+      mondayWeek1.getUTCDate() + (semana_ano - 1) * 7
+    )
+  );
+
+  return NOMES_DIAS.map((item, idx) => {
+    const dt = new Date(
+      Date.UTC(
+        mondayTarget.getUTCFullYear(),
+        mondayTarget.getUTCMonth(),
+        mondayTarget.getUTCDate() + idx
+      )
+    );
+    const yyyy = String(dt.getUTCFullYear());
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+
+    return {
+      sigla: item.sigla,
+      nomeCompleto: item.nomeCompleto,
+      data: `${yyyy}-${mm}-${dd}`,
+      diaMes: `${dd}/${mm}`,
+    };
+  });
 }

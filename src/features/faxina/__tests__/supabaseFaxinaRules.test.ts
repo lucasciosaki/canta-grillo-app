@@ -7,6 +7,7 @@ import {
   FUNCOES_OFICIAIS,
   calcularProximaRotacao,
   getIsoWeekAndYear,
+  getDiasDaSemanaIso,
   obterRegraPorPontos,
   REGRAS_PONTOS_PADRAO,
 } from '../../../types/faxina.ts';
@@ -17,6 +18,7 @@ const rootDir = path.resolve(__dirname, '../../../../');
 const schemaSqlPath = path.join(rootDir, 'supabase/schema.sql');
 const vercelJsonPath = path.join(rootDir, 'vercel.json');
 const netlifyTomlPath = path.join(rootDir, 'netlify.toml');
+const quadroScreenPath = path.join(rootDir, 'src/features/faxina/QuadroPontosScreen.tsx');
 
 describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => {
   const schemaSql = fs.readFileSync(schemaSqlPath, 'utf8');
@@ -272,6 +274,59 @@ describe('Database-First Faxina Rules & Deploy Config Tests (Feature 5)', () => 
       const res = getIsoWeekAndYear(new Date('2026-10-17T12:00:00Z'));
       assert.ok(res.semana_ano >= 1 && res.semana_ano <= 53);
       assert.equal(res.ano, 2026);
+    });
+
+    it('deve retornar os 7 dias da semana ISO (Seg a Dom) para a semana informada', () => {
+      const dias = getDiasDaSemanaIso(43, 2026);
+      assert.equal(dias.length, 7);
+      assert.deepEqual(
+        dias.map((d) => d.sigla),
+        ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+      );
+      for (const dia of dias) {
+        assert.match(dia.data, /^\d{4}-\d{2}-\d{2}$/);
+        assert.match(dia.diaMes, /^\d{2}\/\d{2}$/);
+      }
+    });
+  });
+
+  describe('7. Melhorias de UI no Quadro de Pontos (Dias da Semana, Substituição de Foto e Aba Fiscal)', () => {
+    const quadroScreenCode = fs.readFileSync(quadroScreenPath, 'utf8');
+
+    it('deve consultar todas as tarefas da semana em registro_diario_faxina (.eq("semana_ano", semana_ano))', () => {
+      assert.match(
+        quadroScreenCode,
+        /from\('registro_diario_faxina'\)[\s\S]*?\.eq\('semana_ano',\s*semana_ano\)/,
+        'Deve buscar todas as tarefas da semana atual para alimentar a barra dos 7 dias'
+      );
+    });
+
+    it('deve manter o input fileInputRef montado fora da condicional para permitir substituir foto já enviada', () => {
+      const idxInput = quadroScreenCode.indexOf('ref={fileInputRef}');
+      const idxTernary = quadroScreenCode.indexOf("minhaTarefaHoje?.status === 'cumprido' ?");
+      assert.ok(idxInput > 0 && idxTernary > 0, 'Deve conter fileInputRef e ternário de status cumprido');
+      assert.ok(
+        idxInput < idxTernary,
+        'O <input ref={fileInputRef} /> deve estar montado antes do ternário para funcionar também na substituição'
+      );
+      assert.match(
+        quadroScreenCode,
+        /já enviou a foto de hoje!/,
+        'Deve exibir aviso quando outro morador do quarto já enviou a foto'
+      );
+      assert.match(
+        quadroScreenCode,
+        /Substituir foto enviada/,
+        'Deve exibir botão claro para substituir a foto enviada'
+      );
+    });
+
+    it('deve renderizar a aba Fiscal (Halls) condicionalmente apenas quando souFiscal for verdadeiro', () => {
+      assert.match(
+        quadroScreenCode,
+        /\{souFiscal\s*&&\s*\(\s*<button[\s\S]*?setActiveTab\('fiscal'\)[\s\S]*?Fiscal \(Halls\)/,
+        'A aba Fiscal (Halls) só deve ser exibida para o quarto do Halls na semana ou Admin'
+      );
     });
   });
 });

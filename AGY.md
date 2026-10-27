@@ -481,6 +481,10 @@ classDiagram
      - `0 14 * * *` (11:00 BRT / 14:00 UTC): Executa `public.processar_auditoria_fiscal_11h()`. Marca tarefas de ontem sem avaliação como `fiscal_status = 'omitido'`. Se houver omissões e o Halls não faltou por foto, aplica no máximo +1 falta ao quarto do Halls.
      - `*/15 * * * *`: Executa `public.verificar_penalidades_pontos_24h()`.
    * **Deploy Contínuo e Caching (`vercel.json` & `netlify.toml`):** Configuração de rewrite SPA para `/index.html` e cabeçalhos `Cache-Control: public, max-age=0, must-revalidate` para `sw.js`, `registerSW.js` e `manifest.webmanifest`, garantindo atualização imediata do PWA.
+   * **Barra dos 7 Dias da Semana, Substituição de Foto e Aba Fiscal Condicional (`QuadroPontosScreen.tsx`):**
+     - **Quadro Geral (`Seg` a `Dom`):** Carrega todos os registros da semana (`registro_diario_faxina` filtrado por `semana_ano` e `ano`) e exibe em cada card de quarto a barra dos 7 dias da semana ISO (`getDiasDaSemanaIso`), indicando dias com foto enviada, dias faltados e o dia atual. Ao tocar em qualquer dia com foto enviada, abre modal de detalhes com a foto comprovante, apelido de quem enviou, horário e parecer do Fiscal.
+     - **Minha Função (Aviso e Substituição de Foto):** Se um morador do quarto já enviou a foto do dia (`status = 'cumprido'`), exibe banner informando quem enviou (`enviado_por_apelido`) e permite substituir a foto imediatamente mantendo o `<input ref={fileInputRef} />` sempre montado no DOM.
+     - **Visibilidade Condicional da Aba `Fiscal (Halls)`:** O botão da aba `Fiscal (Halls)` na navegação superior é renderizado exclusivamente quando o usuário pertence ao quarto escalado no Halls naquela semana (`moradorQuartoId === quadro.quarto_fiscal_id`) ou é Administrador (`isAdmin`).
    * **Realtime:** Transmitida via publicação `supabase_realtime` para atualização instantânea em todos os dispositivos da casa.
 
 ---
